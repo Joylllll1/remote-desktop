@@ -92,11 +92,13 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.errors, [])
 
     def test_more_than_128_events_is_rejected(self):
-        sock, _ = self.connect()
+        sock, thread = self.connect()
         session = Session(sock)
-        with self.assertRaises(Exception):
+        with self.assertRaises(ValueError):
             session.exchange([{'type': 'release'} for _ in range(129)])
         session.close()
+        thread.join(3)
+        self.assertFalse(thread.is_alive())
         self.assertFalse(any(call[0] == 'frame' for call in self.desktop.calls))
         self.assertFalse(any(call[0] == 'apply' and len(call[1]) > 128
                              for call in self.desktop.calls))
