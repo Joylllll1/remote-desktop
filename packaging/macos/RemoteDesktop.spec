@@ -32,7 +32,7 @@ app = BUNDLE(
         'LSApplicationCategoryType': 'public.app-category.utilities',
         'NSHighResolutionCapable': True,
         'NSScreenCaptureUsageDescription': '共享时采集本机屏幕，发送给已授权的 Tailscale 设备。',
-        'CFBundleShortVersionString': '0.1.2',
-        'CFBundleVersion': '3',
+        'CFBundleShortVersionString': '0.1.3',
+        'CFBundleVersion': '4',
     },
 )

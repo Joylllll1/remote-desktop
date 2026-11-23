@@ -72,7 +72,10 @@ def fake_view(worker):
     window._poll_job = window._resize_job = window._focus_job = None
     window._keys_down, window._buttons_down, window._key_release_jobs = {}, set(), {}
     window._frame = window._image_rect = window._rendered_frame = None
+    window._last_rendered_at, window._stale = None, False
     window._image_item, window._message_item, window._dot = 1, 2, 3
+    window._message_background = 4
+    window.canvas.bbox.return_value = (0, 0, 180, 50)
     window.title = "家中电脑"
     return window
 
@@ -291,6 +294,62 @@ class ViewerRecoveryTests(TestCase):
                 stream.close()
             with self.subTest(stream=type(stream).__name__), patch.object(viewer.sys, "stdout", stream):
                 viewer._lifecycle("正常状态")
+
+    def test_stale_picture_pauses_input_keeps_epoch_and_recovers_on_new_render(self):
+        worker = self.worker(Session)
+        window = fake_view(worker)
+        picture = Image.new("RGB", (24, 16))
+        self.addCleanup(picture.close)
+        window._frame = window._rendered_frame = picture
+        window._render = Mock()
+        worker.inputs.begin(7)
+        worker.frame_shown(7)
+        worker.inputs.append({"type": "key", "key": "a", "down": True})
+        window._keys_down[12] = "a"
+        window._last_rendered_at = 100
+        with patch.object(viewer.time, "monotonic", return_value=101.99) as clock:
+            window._poll()
+            self.assertTrue(worker.inputs.ready)
+            clock.return_value = 102
+            window._poll()
+            self.assertFalse(worker.inputs.ready)
+            self.assertTrue(worker.inputs.matches(7))
+            self.assertEqual(worker.inputs.take(), [{"type": "release"}])
+            self.assertFalse(window._keys_down)
+            self.assertIs(window._frame, picture)
+            self.assertEqual(window.status.set.call_args.args[0], "画面延迟 · 已 2 秒未更新")
+            clock.return_value = 105
+            window._safe_status()
+            self.assertEqual(window.status.set.call_args.args[0], "画面延迟 · 已 5 秒未更新")
+            worker.inputs.append({"type": "key", "key": "b", "down": True})
+            self.assertEqual(worker.inputs.take(), [])
+            worker.frames.put((7, picture))
+            window._poll()
+            self.assertFalse(window._stale)
+            self.assertTrue(worker.inputs.ready)
+            self.assertEqual(window._last_rendered_at, 105)
+            self.assertIn("已连接", window.status.set.call_args.args[0])
+            worker.inputs.append({"type": "key", "key": "c", "down": True})
+            self.assertEqual(worker.inputs.take(), [{"type": "key", "key": "c", "down": True}])
+
+    def test_stale_epoch_cannot_reenable_controls_after_connection_changes(self):
+        worker = self.worker(Session)
+        window = fake_view(worker)
+        picture = Image.new("RGB", (24, 16))
+        self.addCleanup(picture.close)
+        window._frame = window._rendered_frame = picture
+        window._render = Mock()
+        window._last_rendered_at = 100
+        worker.inputs.begin(7)
+        worker.frame_shown(7)
+        with patch.object(viewer.time, "monotonic", return_value=103):
+            window._poll()
+            worker.inputs.begin(8)
+            worker.frames.put((7, picture))
+            window._poll()
+            self.assertFalse(worker.inputs.ready)
+            self.assertTrue(worker.inputs.matches(8))
+            self.assertFalse(worker.inputs.enable(7))
 
 
 if __name__ == "__main__":

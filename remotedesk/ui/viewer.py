@@ -92,6 +92,15 @@ class _InputBuffer:
     def disable(self):
         self.begin(None)
 
+    def pause(self):
+        """Drop pending controls but keep this session eligible for a new frame."""
+        with self._lock:
+            was_enabled = self._enabled
+            self._enabled = False
+            self._events.clear()
+            if was_enabled and self._epoch is not None:
+                self._events.append({"type": "release"})
+
     def matches(self, epoch):
         with self._lock:
             return epoch is not None and self._epoch == epoch
@@ -300,6 +309,7 @@ class _Viewer:
         self.canvas = tk.Canvas(self.root, background="#182321", highlightthickness=0, takefocus=True)
         self.canvas.pack(fill="both", expand=True)
         self._image_item = self.canvas.create_image(0, 0, anchor="nw")
+        self._message_background = self.canvas.create_rectangle(0, 0, 0, 0, fill="#182321", outline="")
         self._message_item = self.canvas.create_text(
             0, 0, text="正在连接远程桌面…", fill="#e7ebee", justify="center",
         )
@@ -311,6 +321,8 @@ class _Viewer:
         self._image_rect = None
         self._rendered_frame = None
         self._rendered_size = None
+        self._last_rendered_at = None
+        self._stale = False
         self._keys_down = {}
         self._buttons_down = set()
         self._key_release_jobs = {}
@@ -364,6 +376,7 @@ class _Viewer:
             return
         try:
             self._poll_updates()
+            self._check_stale()
         except Exception as cause:
             self._fail_display(cause)
         if not self._closed and not self._ended:
@@ -382,10 +395,37 @@ class _Viewer:
         self._image_rect = None
         if self._rendered_frame is None:
             self.canvas.itemconfigure(self._image_item, state="hidden")
-            self.canvas.itemconfigure(self._message_item, state="normal", text=message)
+            self._show_overlay(message)
         else:
-            # Retain the last complete picture, with offline state in the footer.
-            self.canvas.itemconfigure(self._message_item, state="hidden")
+            self._show_overlay("正在显示旧画面\n" + message)
+
+    def _show_overlay(self, message):
+        self.canvas.itemconfigure(self._message_item, state="normal", text=message)
+        self.canvas.itemconfigure(self._message_background, state="normal")
+        self._overlay_bounds()
+
+    def _overlay_bounds(self):
+        box = self.canvas.bbox(self._message_item)
+        if box:
+            left, top, right, bottom = box
+            self.canvas.coords(self._message_background, left - 14, top - 10, right + 14, bottom + 10)
+
+    def _check_stale(self):
+        if self._closed or self._ended or self._last_rendered_at is None:
+            return False
+        age = max(0, int(time.monotonic() - self._last_rendered_at))
+        if age < 2:
+            return False
+        if not self._stale:
+            self._stale = True
+            self._input.pause()
+            self._pause_input("等待新画面，控制已暂停。")
+            self._indicator.itemconfigure(self._dot, fill="#a16d28")
+            _lifecycle("画面延迟，已暂停控制，正在等待新画面。")
+        text = "画面延迟 · 已 %d 秒未更新" % age
+        if self.status.get() != text:
+            self.status.set(text)
+        return True
 
     def _show_terminal(self, error):
         self._ended = True
@@ -420,14 +460,22 @@ class _Viewer:
             return
         self._frame = frame
         self._render()
+        was_stale = self._stale
+        self._last_rendered_at = time.monotonic()
+        self._stale = False
         if self._worker.frame_shown(epoch):
             self._indicator.itemconfigure(self._dot, fill="#11645a")
             self._update_status()
+            if was_stale:
+                _lifecycle("画面已更新，已恢复控制。")
+        else:
+            self._show_overlay("正在显示旧画面\n等待连接恢复，控制已暂停。")
 
     def _resized(self, event):
         if self._closed:
             return
         self.canvas.coords(self._message_item, event.width / 2, event.height / 2)
+        self._overlay_bounds()
         if self._resize_job is not None:
             self.root.after_cancel(self._resize_job)
         self._resize_job = self.root.after(35, self._safe_render)
@@ -435,6 +483,8 @@ class _Viewer:
     def _safe_render(self):
         try:
             self._render()
+            if self._rendered_frame is not None and not self._input.ready:
+                self._show_overlay("正在显示旧画面\n等待新画面，控制已暂停。")
         except Exception as cause:
             self._fail_display(cause)
 
@@ -456,10 +506,11 @@ class _Viewer:
         left, top = (width - size[0]) // 2, (height - size[1]) // 2
         self.canvas.coords(self._image_item, left, top)
         self.canvas.itemconfigure(self._message_item, state="hidden")
+        self.canvas.itemconfigure(self._message_background, state="hidden")
         self._image_rect = (left, top, *size)
 
     def _update_status(self):
-        if self._closed or self._ended or self._frame is None or not self._input.ready:
+        if self._closed or self._ended or self._check_stale() or self._frame is None or not self._input.ready:
             return
         hint = "键鼠控制中" if self.canvas.focus_get() == self.canvas else "点击画面控制"
         text = "已连接   ·   %s   ·   %d × %d" % (hint, self._frame.width, self._frame.height)

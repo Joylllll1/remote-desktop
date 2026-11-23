@@ -60,6 +60,8 @@ def main():
         subprocess.Popen([executable("rustdesk"), "--connect", endpoint])
     else:
         from remotedesk.ui.viewer import run_viewer
+        from remotedesk.network.viewer_lock import viewer_lock
         if not peer.get("ID"):
             raise ValueError("目标设备缺少稳定身份，请刷新设备列表。")
-        run_viewer(lambda: open_viewer_session(peer["ID"]), peer["HostName"])
+        with viewer_lock(peer["ID"]):
+            run_viewer(lambda: open_viewer_session(peer["ID"]), peer["HostName"])
