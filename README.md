@@ -70,3 +70,7 @@ Mac 控制 Linux X11 已在隔离环境中验证。Windows 后端已有模拟测
 **出门前验证外网连接**，可以先让随身电脑切换到手机热点，运行 `check home-pc`。看到「首次连接成功」和「重新连接成功」后，打开远程窗口，在家中电脑的空白文本编辑器里输入一行字，确认画面和键鼠都可用。
 
 完整命令选项见 `remote_desktop.py --help`。在项目目录中，用同一虚拟环境的 Python 执行 `-m unittest discover -v` 可运行仓库测试。[依赖清单](requirements.txt) · [会话协议测试](test_session.py)
+
+## 许可证
+
+[MIT 许可证](LICENSE)
