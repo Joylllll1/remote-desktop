@@ -16,5 +16,6 @@ ln -s /Applications "$build_dir/image/Applications"
 hdiutil create -quiet -volname RemoteDesktop -format UDZO -fs HFS+ \
     -srcfolder "$build_dir/image" "$build_dir/RemoteDesktop.dmg"
 hdiutil verify -quiet "$build_dir/RemoteDesktop.dmg"
-mkdir -p "$root/dist"
-mv "$build_dir/RemoteDesktop.dmg" "$root/dist/RemoteDesktop-macOS-$arch.dmg"
+output_dir="${1:-$root/dist}"
+mkdir -p "$output_dir"
+mv "$build_dir/RemoteDesktop.dmg" "$output_dir/RemoteDesktop-macOS-$arch.dmg"

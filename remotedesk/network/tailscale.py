@@ -30,15 +30,26 @@ def executable(name):
     raise ValueError(f"找不到 {name}。请安装桌面版，或将可执行文件加入 PATH。")
 
 
-def network_status():
-    result = subprocess.run(
-        [executable("tailscale"), "status", "--json"],
-        capture_output=True, encoding="utf-8", errors="replace", timeout=10,
+def _run_tailscale(*args, timeout):
+    # Finder doesn't supply the shell variables that the macOS app uses to select CLI mode.
+    env = dict(os.environ, TAILSCALE_BE_CLI="1") if sys.platform == "darwin" else None
+    return subprocess.run(
+        [executable("tailscale"), *args], env=env,
+        capture_output=True, encoding="utf-8", errors="replace", timeout=timeout,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
+
+
+def network_status():
+    result = _run_tailscale("status", "--json", timeout=10)
     if result.returncode and not result.stdout.lstrip().startswith("{"):
         raise ValueError("无法读取 Tailscale 状态，请打开 Tailscale 并检查连接。")
-    status = json.loads(result.stdout)
+    try:
+        status = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        status = None
+    if not isinstance(status, dict) or not status.get("BackendState"):
+        raise ValueError("Tailscale 没有返回有效的设备状态。请打开 Tailscale，确认已连接后点击「刷新」。")
     state = status.get("BackendState")
     if state != "Running":
         raise ValueError(f"Tailscale 状态为 {state}，请先在 Tailscale 中登录并连接。")
@@ -71,12 +82,15 @@ def address(node):
 def identify(remote):
     ip, port = remote[:2]
     endpoint = f"[{ip}]:{port}" if ":" in ip else f"{ip}:{port}"
-    result = subprocess.run([executable("tailscale"), "whois", "--json", endpoint],
-                            capture_output=True, timeout=5,
-                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    result = _run_tailscale("whois", "--json", endpoint, timeout=5)
     if result.returncode:
         return None
-    return (json.loads(result.stdout).get("Node") or {}).get("StableID")
+    try:
+        identity = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    node = identity.get("Node") if isinstance(identity, dict) else None
+    return node.get("StableID") if isinstance(node, dict) else None
 
 
 def peer_by_id(devices, node_id):
