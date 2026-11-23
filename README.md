@@ -1,91 +1,72 @@
-# 自用远程桌面
+<h1 align="center">自用远程桌面</h1>
 
-从外面的 Mac 查看和控制家中 Windows 或 Linux 已登录的桌面。两台电脑运行同一份程序。要开启共享需已登录图形桌面；重启后自动共享从用户登录时开始。Tailscale 负责设备身份和加密传输，项目的被控端采集屏幕并执行键鼠操作，控制端在本地窗口里显示画面。
+<p align="center">出门时，用随身电脑通过 Tailscale 查看家中电脑的桌面，用键盘和鼠标操作已登录的应用。</p>
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.12-3776AB" alt="Python 3.12">
+  <img src="https://img.shields.io/badge/GUI-Tkinter-456B59" alt="Tkinter 图形界面">
+</p>
 
-## 两台电脑的准备工作
+[快速开始](#快速开始) · [共享与授权](#共享与授权) · [平台限制](#平台限制) · [命令与排障](#命令与排障)
 
-安装 [Tailscale](https://tailscale.com/download)，加入同一个私人网络并连接。安装带 Tk 的 Python 3.12，把本项目放到两台电脑上，在各自的项目目录创建虚拟环境。
+两台电脑运行同一份程序。家里的电脑开启共享，随身电脑打开查看窗口。要反向控制，交换两台电脑的操作即可。设备面板会列出同一 Tailscale 网络中可见的设备及其在线状态。
 
-macOS / Linux：
+## 快速开始
+
+在两台电脑上安装并连接 [Tailscale](https://tailscale.com/download)，加入同一个私人网络。准备带 Tkinter 的 Python 3.12，把项目源码放到两台电脑上。以下命令都在各自包含 `remote_desktop.py` 和 `requirements.txt` 的目录中执行。
+
+**macOS 或 Linux 终端**
 
 ```sh
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python remote_desktop.py
 ```
 
-Windows PowerShell：
+**Windows PowerShell**
 
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe remote_desktop.py
 ```
 
-以下示例使用已激活的环境。Windows 可把 `python` 换成 `.\.venv\Scripts\python.exe`。控制端需能运行 `python -m tkinter`。若缺少 Tk，Linux 使用发行版提供的 Python Tk 包，Mac 可使用 python.org 的带 Tk 安装包。
+两边都出现设备面板后：
 
-## 打开设备面板
+1. **在家里的电脑上**，选中随身电脑，点击「允许所选设备，开始共享」。看到「正在共享本机」后保留这个窗口。
+2. **在随身电脑上**，选中家里的电脑，点击「连接所选设备」。新窗口会显示家中电脑的主屏幕，点进画面即可输入、拖动或滚动。
+3. 关闭查看窗口会结束本次连接，之后可以重新连入。要结束共享，在家里的面板中点击「停止本次共享」。
 
-在已激活虚拟环境的项目目录运行：
+## 共享与授权
 
-```sh
-python remote_desktop.py
-```
+每次开启共享时指定一台允许连接的设备。被控端通过 Tailscale 核对来源设备的稳定节点 ID，同名设备不能继承授权。
 
-在家里电脑上，选择外出使用的 Mac 并开启共享。在 Mac 上，选择家中的 Windows 或 Linux 设备并连接。面板可以查看在线状态、刷新设备列表和停止本窗口开启的共享。它通过当前已连接的 Tailscale 网络工作。Tailscale 断开时，打开面板仍可查看提示。
+如果希望重启后继续使用，在被控端选中控制设备，在「登录后自动共享」中点击「启用所选设备」。下次用户登录图形桌面时，面板会打开并恢复共享。默认需要手动开启。移动项目或虚拟环境后需重新设置登录启动项。
 
-若希望重启后恢复，在家里的电脑上为指定的 Mac 开启登录后自动共享。程序会记录这台 Mac 的稳定节点 ID，电脑名称发生变化也能识别。同名替换设备需要重新授权。下次登录图形桌面时会打开共享面板；第一次启动可能需要等待 Tailscale 上线。请将项目和虚拟环境放在固定目录，移动后重新设置。可在面板中关闭登录共享。
+## 平台限制
 
-## 用命令行在家里电脑上开启共享
+被控端需要开机、联网、保持唤醒，并有已登录的图形桌面。
 
-```sh
-python remote_desktop.py list
-python remote_desktop.py host --allow travel-laptop
-```
-
-把 `travel-laptop` 换成外出电脑在列表中的名称。也可以填写完整 DNS 名或 Tailscale IP。被控端在接受连接前通过本机 Tailscale 的 `whois` 核对来源设备的稳定节点 ID。授权以设备为单位，持有该电脑并能使用其 Tailscale 连接的人可以控制会话。
-
-看到“正在共享桌面”后保留这个终端，让电脑保持登录、联网和唤醒。会话断开后可以重新连接。按 Ctrl+C 即可停止共享。手动模式下，注销、重启或退出这个进程后，需要重新运行命令。若已在设备面板启用登录共享，则会在下次登录时自动打开。
-
-- **macOS 被控端**：在系统设置的「隐私与安全性」中，给运行程序的终端或 Python 授予屏幕录制、辅助功能权限，更改后重启终端。文件保险箱的开机解锁界面不在支持范围内。
-- **Windows 被控端**：从已登录用户的桌面运行程序。首版针对常规应用窗口，UAC 安全桌面和登录界面不在支持范围内。
-- **Linux 被控端**：使用已登录的 X11 图形会话。Wayland 被控端暂未支持。
-
-## 在外面的 Mac 上连接 Windows 或 Linux
-
-```sh
-python remote_desktop.py list
-python remote_desktop.py connect home-windows
-# 连接另一台 Linux 电脑时改用它的名称
-python remote_desktop.py connect home-linux
-```
-
-两条连接命令按需选一条，用列表中的实际名称替换示例名。远程窗口显示一块显示器的画面，支持点击、拖动、滚动、键盘输入。在 Mac 上控制 Windows 或 Linux 时，复制、粘贴使用被控系统的 Ctrl+C 和 Ctrl+V，Mac 的 Command 键作为系统键发送。关闭窗口结束本次会话。若此前已经配置了 RustDesk，可用 `connect home-pc --rustdesk` 启动那个客户端。
-
-要反向控制，在新的被控机运行 `host --allow 控制机名称`，在控制机运行 `connect 被控机名称`。例如用 Linux 控制 Mac 时，先给 Mac 授予屏幕录制和辅助功能权限。
-
-## 用手机热点验收
-
-1. 家中电脑打开一个空白文本编辑器，保持共享进程运行。
-2. 外出电脑断开家里的 Wi-Fi，连接手机热点，确认 Tailscale 已连接。
-3. 可以先用 `python remote_desktop.py check home-pc`（替换设备名）核对授权、画面和重新连接。该命令连续连接两次，解码画面并报告分辨率和耗时；只在内存中处理图像，不发送键鼠事件。
-4. 在外出电脑的设备面板中连接家中电脑，点击远程文本编辑器，输入几行文字，拖动选中一段。确认操作结果出现在传回的画面里。
-5. 关闭远程窗口后再次连接，确认家中无人操作也能恢复会话。
-
-若提示 `Stopped`，先连接 Tailscale。若显示在线但连接超时，核对被控端是否正在共享，以及主机防火墙和 Tailscale 访问规则是否允许外出电脑访问被控端的 TCP 47650。服务监听家中电脑的 Tailscale 地址，路由器无需配置端口转发。若提示设备未获授权，检查家中终端中 `--allow` 后面的设备名。
-
-Mac 上已有其他 VPN 时，Tailscale 默认只接管特定地址。出口节点设置为“无”适合只连接家中电脑。其他 VPN 的全局隧道、防火墙、重叠地址段或 DNS 配置仍可能影响连接。[Tailscale 与其他 VPN 共存](https://tailscale.com/docs/reference/faq/other-vpns)
-
-[Tailscale 连接方式](https://tailscale.com/docs/reference/connection-types) · [pynput 平台限制](https://pynput.readthedocs.io/en/latest/limitations.html)
-
-## 当前验证范围
-
-| 路径 | 已验证内容 |
+| 被控端 | 首次使用须知 |
 | --- | --- |
-| Mac 控制 Linux X11 | 在隔离虚拟网络中，Mac 实际控制窗口显示 Linux 的 800×600 桌面。在该窗口执行的点击和输入传到 Linux，文本框记录坐标 (200, 300) 和文字 `world`。 |
-| Mac 控制 Windows | 已验证 Windows 后端在模拟系统接口下的 DPI 初始化顺序、截图缩放和键鼠坐标；仍待 Windows 实机验收。 |
-| 反向控制 Mac | 已验证本机屏幕采集和权限检查，完整键鼠会话待具备辅助功能权限的 Mac 验证。 |
-| 隔离的 Tailscale 网络 | 在本机隔离环境中使用三个真实的 Tailscale 测试节点、本地中继和协议桥接验证授权。允许的节点收到测试 JPEG，未授权节点被拒绝。这里使用模拟桌面，家庭网络和系统级隧道绑定另行验收。 |
-| 桌面登录恢复 | 已验证本机面板和临时用户配置中的启用、停用与节点 ID 绑定。各系统实际重启并登录后的恢复仍待实机验证。 |
-| 通过手机热点访问家庭 Tailscale 网络 | 待实际设备联网验收。 |
+| macOS | 在「系统设置 → 隐私与安全性」中，为运行程序的终端或 Python 授予屏幕录制和辅助功能权限，然后重新打开程序。 |
+| Windows | 在已登录用户的桌面上运行。登录界面和 UAC 安全桌面不在控制范围内。 |
+| Linux | 使用 X11 桌面会话。当前被控端不支持 Wayland。 |
 
-运行 `python -m unittest discover -v` 可复验本地协议的基本行为，包括拒绝未授权会话、断线释放按键和限制单批事件数量。
+Mac 控制 Linux X11 已在隔离环境中验证。Windows 后端已有模拟测试，Mac 控制 Windows 实机、反向控制 Mac 的完整键鼠会话，以及各系统重启登录后的恢复仍待实机验证。
+
+## 命令与排障
+
+下表中的参数接在 `remote_desktop.py` 后面，解释器沿用上面的启动命令。将 `travel-laptop` 和 `home-pc` 换成设备列表中的实际名称。重名时可用完整 DNS 名或 Tailscale IP。
+
+| 参数 | 执行位置和结果 |
+| --- | --- |
+| `list` | 任一端。列出可见设备的名称、地址和在线状态。 |
+| `host --allow travel-laptop` | 被控端。只允许指定电脑连接，按 Ctrl+C 停止共享。 |
+| `connect home-pc` | 控制端。打开远程桌面窗口。若已另行配置 RustDesk，可追加 `--rustdesk` 调用其客户端。 |
+| `check home-pc` | 控制端。连续连接两次，分别接收并解码一帧画面，输出分辨率和耗时，全程不发送键鼠事件。 |
+
+**设备在线但连不上时**，先确认被控端面板显示「正在共享本机」，且允许的是当前控制设备。连接超时再检查主机防火墙和 Tailscale 访问规则是否允许控制端访问被控端的 TCP 47650。提示 `Stopped` 时先连接 Tailscale。若同时使用其他 VPN，可参考 [Tailscale 的共存说明](https://tailscale.com/docs/reference/faq/other-vpns)。
+
+**出门前验证外网连接**，可以先让随身电脑切换到手机热点，运行 `check home-pc`。看到「首次连接成功」和「重新连接成功」后，打开远程窗口，在家中电脑的空白文本编辑器里输入一行字，确认画面和键鼠都可用。
+
+完整命令选项见 `remote_desktop.py --help`。在项目目录中，用同一虚拟环境的 Python 执行 `-m unittest discover -v` 可运行仓库测试。[依赖清单](requirements.txt) · [会话协议测试](test_session.py)
