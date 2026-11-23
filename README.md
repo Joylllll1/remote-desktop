@@ -1,12 +1,18 @@
 <h1 align="center">自用远程桌面</h1>
 
-<p align="center">出门时，用随身电脑通过 Tailscale 查看家中电脑的桌面，用键盘和鼠标操作已登录的应用。</p>
+<p align="center">在外也能通过 Tailscale 连接家里的电脑，用键盘和鼠标操作它的桌面。</p>
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.12-3776AB" alt="Python 3.12">
   <img src="https://img.shields.io/badge/GUI-Tkinter-456B59" alt="Tkinter 图形界面">
 </p>
 
-[快速开始](#快速开始) · [共享与授权](#共享与授权) · [平台限制](#平台限制) · [命令与排障](#命令与排障)
+<p align="center">
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#共享与授权">共享与授权</a> ·
+  <a href="#平台限制">平台限制</a> ·
+  <a href="#命令与排障">命令与排障</a> ·
+  <a href="#目录结构">目录结构</a>
+</p>
 
 两台电脑运行同一份程序。家里的电脑开启共享，随身电脑打开查看窗口。要反向控制，交换两台电脑的操作即可。设备面板会列出同一 Tailscale 网络中可见的设备及其在线状态。
 
@@ -69,7 +75,20 @@ Mac 控制 Linux X11 已在隔离环境中验证。Windows 后端已有模拟测
 
 **出门前验证外网连接**，可以先让随身电脑切换到手机热点，运行 `check home-pc`。看到「首次连接成功」和「重新连接成功」后，打开远程窗口，在家中电脑的空白文本编辑器里输入一行字，确认画面和键鼠都可用。
 
-完整命令选项见 `remote_desktop.py --help`。在项目目录中，用同一虚拟环境的 Python 执行 `-m unittest discover -v` 可运行仓库测试。[依赖清单](requirements.txt) · [会话协议测试](test_session.py)
+完整命令选项见 `remote_desktop.py --help`。在项目目录中，用同一虚拟环境的 Python 执行 `-m unittest discover -v` 可运行仓库测试。[依赖清单](requirements.txt) · [会话协议测试](tests/test_session.py)
+
+## 目录结构
+
+```text
+remote_desktop.py       启动图形面板或执行命令
+remotedesk/
+├── cli.py              解析命令，调用控制端或被控端
+├── ui/                 设备面板和远程桌面窗口
+├── host/               共享服务、屏幕采集和键鼠输入
+├── network/            Tailscale 设备发现、连接和会话协议
+└── login/              登录共享设置和系统自启动项
+tests/                  会话、授权、登录启动和平台行为测试
+```
 
 ## 许可证
 

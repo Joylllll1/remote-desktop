@@ -13,6 +13,8 @@ import subprocess
 import sys
 import tempfile
 
+from remotedesk import LAUNCHER
+
 
 _LABEL = "local.remote-desktop.gui"
 _WINDOWS_NAME = "Remote Desktop GUI.lnk"
@@ -47,7 +49,7 @@ def _command():
         raise RuntimeError("无法确定当前 Python 解释器的位置，不能配置登录自启。")
     # Do not resolve this symlink: a venv's interpreter must keep using its venv.
     interpreter = os.path.abspath(sys.executable)
-    script = Path(__file__).resolve().with_name("remote_desktop.py")
+    script = LAUNCHER
     if not script.is_file():
         raise RuntimeError("找不到 remote_desktop.py，不能配置登录自启。")
     return [interpreter, str(script), "gui", "--login"]

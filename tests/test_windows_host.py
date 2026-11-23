@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from PIL import Image
-from desktop_host import Desktop
+from remotedesk.host.desktop import Desktop
 
 
 class WindowsHostRegressionTests(unittest.TestCase):

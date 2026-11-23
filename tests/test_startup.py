@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import desktop_startup as startup
+from remotedesk.login import startup
 
 
 def desktop_value(value):
@@ -54,7 +54,7 @@ class StartupTests(unittest.TestCase):
         self.fail_shortcut = False
         self.patches = [
             patch.object(Path, "home", return_value=self.home),
-            patch.object(startup, "__file__", str(self.project / "desktop_startup.py")),
+            patch.object(startup, "LAUNCHER", self.project / "remote_desktop.py"),
             patch.object(sys, "executable", str(self.python)),
             patch.dict(os.environ, {}, clear=True),
             patch.object(startup.subprocess, "run", side_effect=self.fake_powershell),

@@ -604,11 +604,11 @@ def run_panel(login=False):
         raise RuntimeError("远程桌面面板必须在主线程中运行。")
     import tkinter as tk
     from tkinter import ttk
-    import desktop_preferences
-    from remote_desktop import network_status
+    from remotedesk import LAUNCHER
+    from remotedesk.login import preferences
+    from remotedesk.network.tailscale import network_status
 
-    panel = _Panel(network_status, desktop_preferences,
-                   Path(__file__).with_name("remote_desktop.py"), tk, ttk, login=login)
+    panel = _Panel(network_status, preferences, LAUNCHER, tk, ttk, login=login)
     panel.run()
 
 

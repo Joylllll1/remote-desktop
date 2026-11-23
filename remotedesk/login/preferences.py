@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 import tempfile
 
-import desktop_startup
+from . import startup
 
 
 def settings_file():
@@ -22,7 +22,7 @@ def settings_file():
 
 
 def login_peer():
-    if not desktop_startup.enabled():
+    if not startup.enabled():
         return None
     try:
         data = json.loads(settings_file().read_text(encoding="utf-8"))
@@ -48,9 +48,9 @@ def enable_login(node_id, name):
         with pending:
             json.dump({"id": node_id, "name": name}, pending, ensure_ascii=False)
         # An old preference without a registered launcher must not be reactivated.
-        if not desktop_startup.enabled():
+        if not startup.enabled():
             path.unlink(missing_ok=True)
-        desktop_startup.install()
+        startup.install()
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -59,4 +59,4 @@ def enable_login(node_id, name):
 def disable_login():
     # If OS removal fails, a leftover launcher may open the panel, but cannot host.
     settings_file().unlink(missing_ok=True)
-    desktop_startup.uninstall()
+    startup.uninstall()

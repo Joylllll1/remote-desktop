@@ -5,7 +5,7 @@ import struct
 import threading
 import unittest
 
-from desktop_session import Session, serve_connection
+from remotedesk.network.session import Session, serve_connection
 
 
 class FakeDesktop:

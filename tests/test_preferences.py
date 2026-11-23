@@ -5,15 +5,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from desktop_preferences import disable_login, enable_login, login_peer
+from remotedesk.login.preferences import disable_login, enable_login, login_peer
 
 
 class LoginPreferenceTest(unittest.TestCase):
     def setUp(self):
         folder = self.enterContext(tempfile.TemporaryDirectory())
         self.settings = Path(folder) / "app" / "login-peer.json"
-        self.enterContext(patch("desktop_preferences.settings_file", return_value=self.settings))
-        self.startup = self.enterContext(patch("desktop_preferences.desktop_startup"))
+        self.enterContext(patch("remotedesk.login.preferences.settings_file", return_value=self.settings))
+        self.startup = self.enterContext(patch("remotedesk.login.preferences.startup"))
         self.startup.enabled.return_value = False
 
     def test_enable_replace_and_disable(self):
