@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Remote Desktop
+Name[zh_CN]=远程桌面
+Comment=Connect and share your own computers over Tailscale
+Comment[zh_CN]=通过 Tailscale 连接和共享自己的电脑
+Exec=/usr/bin/remote-desktop gui
+Icon=remote-desktop-personal
+Terminal=false
+Categories=Network;RemoteAccess;
+StartupNotify=true

@@ -122,6 +122,30 @@ class StartupTests(unittest.TestCase):
             startup.uninstall()
             self.assertFalse(startup.enabled())
 
+    def test_frozen_macos_login_keeps_existing_identity_without_source_launcher(self):
+        executable = self.project / "远程桌面.app" / "Contents" / "MacOS" / "RemoteDesktop"
+        with patch.object(sys, "platform", "darwin"), patch.object(sys, "frozen", True, create=True), \
+                patch.object(sys, "executable", str(executable)), \
+                patch.object(startup, "LAUNCHER", self.root / "_MEI_missing" / "remote_desktop.py"):
+            startup.install()
+            path = self.home / "Library" / "LaunchAgents" / "local.remote-desktop.gui.plist"
+            data = plistlib.loads(path.read_bytes())
+            self.assertEqual(data["Label"], "local.remote-desktop.gui")
+            self.assertEqual(data["ProgramArguments"], [str(executable), "gui", "--login"])
+            self.assertEqual(data["WorkingDirectory"], str(executable.parent))
+            self.assertTrue(startup.enabled())
+            startup.uninstall()
+            self.assertFalse(path.exists())
+
+    def test_windows_pythonw_login_remains_a_visible_gui_launcher(self):
+        windowed = self.python.with_name("pythonw.exe")
+        with patch.object(sys, "platform", "win32"), patch.object(sys, "executable", str(windowed)):
+            startup.install()
+            data = json.loads(startup._entry_path().read_text(encoding="utf-8"))
+            self.assertEqual(data["executable"], str(windowed))
+            self.assertEqual(data["arguments"], subprocess.list2cmdline([str(startup.LAUNCHER), "gui", "--login"]))
+            self.assertEqual(data["directory"], str(self.project))
+
     def test_linux_executable_containing_equals_uses_env_without_a_shell(self):
         with patch.object(sys, "platform", "linux"), patch.object(sys, "executable", str(self.python) + "=new"):
             startup.install()

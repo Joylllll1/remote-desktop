@@ -50,8 +50,9 @@ class Desktop:
     @staticmethod
     def _platform_hint():
         if sys.platform == "darwin":
+            application = "RemoteDesktop 应用" if getattr(sys, "frozen", False) else "运行此主机的终端或 Python"
             return (
-                "请在「系统设置 → 隐私与安全性」中，为运行此主机的终端或 Python "
+                f"请在「系统设置 → 隐私与安全性」中，为{application}"
                 "开启「屏幕录制」（部分版本为「屏幕与系统音频录制」）和「辅助功能」权限，"
                 "然后退出并重新打开该应用。"
             )

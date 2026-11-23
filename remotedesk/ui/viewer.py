@@ -90,16 +90,25 @@ class _Viewer:
         self.ImageTk = ImageTk
         self.root = tk.Tk()
         self.root.title(title)
-        self.root.geometry("1100x740")
+        width = min(1100, max(420, self.root.winfo_screenwidth() - 80))
+        height = min(740, max(280, self.root.winfo_screenheight() - 110))
+        self.root.geometry(f"{width}x{height}")
         self.root.minsize(420, 280)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
-        self.canvas = tk.Canvas(self.root, background="#171b20", highlightthickness=0, takefocus=True)
+        bar = tk.Frame(self.root, bg="#f7faf9", padx=14, pady=7)
+        bar.pack(side="bottom", fill="x")
+        self.status = tk.StringVar(value="正在等待远程画面…")
+        self._disconnect = ttk.Button(bar, text="断开连接", command=self.close)
+        self._disconnect.pack(side="right", padx=(12, 0))
+        self._indicator = tk.Canvas(bar, width=10, height=10, bg="#f7faf9", highlightthickness=0)
+        self._indicator.pack(side="left", padx=(0, 8))
+        self._dot = self._indicator.create_oval(1, 1, 9, 9, fill="#84918d", outline="")
+        status_label = tk.Label(bar, textvariable=self.status, anchor="w", justify="left",
+                                bg="#f7faf9", fg="#253f39")
+        status_label.pack(side="left", fill="x", expand=True)
+        status_label.bind("<Configure>", lambda event: status_label.configure(wraplength=max(1, event.width - 4)))
+        self.canvas = tk.Canvas(self.root, background="#182321", highlightthickness=0, takefocus=True)
         self.canvas.pack(fill="both", expand=True)
-        bar = ttk.Frame(self.root, padding=(10, 7))
-        bar.pack(fill="x")
-        self.status = tk.StringVar(value="正在接收远程桌面…")
-        ttk.Label(bar, textvariable=self.status).pack(side="left", fill="x", expand=True)
-        ttk.Button(bar, text="断开连接", command=self.close).pack(side="right", padx=(10, 0))
         self._image_item = self.canvas.create_image(0, 0, anchor="nw")
         self._message_item = self.canvas.create_text(
             0, 0, text="正在等待远程画面…", fill="#e7ebee", justify="center",
@@ -202,6 +211,8 @@ class _Viewer:
             self._image_rect = None
             self.canvas.itemconfigure(self._image_item, state="hidden")
             self.canvas.itemconfigure(self._message_item, state="normal", text="连接已断开\n请关闭窗口后重新连接。")
+            self._indicator.itemconfigure(self._dot, fill="#a54a32")
+            self._disconnect.configure(text="关闭窗口")
             self.status.set("连接已断开：" + error)
             return
         try:
@@ -209,6 +220,8 @@ class _Viewer:
         except queue.Empty:
             pass
         else:
+            if self._frame is None:
+                self._indicator.itemconfigure(self._dot, fill="#11645a")
             self._frame = frame
             self._render()
             self._update_status()
@@ -244,7 +257,9 @@ class _Viewer:
         if self._closed or self._ended or self._frame is None:
             return
         hint = "键鼠控制中" if self.canvas.focus_get() == self.canvas else "点击画面控制"
-        self.status.set("已连接 · %d × %d · %s" % (self._frame.width, self._frame.height, hint))
+        text = "已连接   ·   %s   ·   %d × %d" % (hint, self._frame.width, self._frame.height)
+        if self.status.get() != text:
+            self.status.set(text)
 
     def _position(self, event, clamp=False):
         if self._closed or self._ended or self._image_rect is None:

@@ -14,11 +14,32 @@
   <a href="#目录结构">目录结构</a>
 </p>
 
+<p align="center"><img src="docs/images/device-panel.png" width="660" alt="远程桌面连接页，示例设备按在线状态排列"></p>
+
 两台电脑运行同一份程序。家里的电脑开启共享，随身电脑打开查看窗口。要反向控制，交换两台电脑的操作即可。设备面板会列出同一 Tailscale 网络中可见的设备及其在线状态。
 
 ## 快速开始
 
-在两台电脑上安装并连接 [Tailscale](https://tailscale.com/download)，加入同一个私人网络。准备带 Tkinter 的 Python 3.12，把项目源码放到两台电脑上。以下命令都在各自包含 `remote_desktop.py` 和 `requirements.txt` 的目录中执行。
+两台电脑都需要连接同一个 [Tailscale 网络](https://tailscale.com/download)。打开 [GitHub Releases 下载页](https://github.com/Joylllll1/remote-desktop/releases/latest)，在 **Assets** 中为每台电脑选择对应的安装包。
+
+| 平台 | 安装与启动 |
+| --- | --- |
+| Windows 10/11（x64） | 双击 `RemoteDesktop-Windows-x64.exe`，按提示安装，然后从开始菜单打开远程桌面应用。 |
+| macOS | Apple 芯片选 `RemoteDesktop-macOS-arm64.dmg`，Intel 芯片选 `RemoteDesktop-macOS-x86_64.dmg`。打开镜像，把 `RemoteDesktop.app` 拖入“应用程序”，从那里启动。 |
+| Ubuntu 24.04 / Debian 13（amd64） | 用系统软件安装器打开 `RemoteDesktop-Linux-amd64.deb`，或在文件所在目录运行 `sudo apt install ./RemoteDesktop-Linux-amd64.deb`，安装后从应用菜单启动。 |
+
+Windows 和 macOS 包含 Python 和 Tk。Linux 由包管理器安装所需的系统依赖。当前自用构建未使用 Windows 发布者证书或 Apple 开发者公证，首次运行时系统可能提示确认来源。Mac 若提示无法验证开发者，可参阅 [Apple 的首次打开说明](https://support.apple.com/zh-cn/102445)。
+
+两边都出现设备面板后：
+
+1. **家里的 Windows 或 Linux**：打开「共享本机」，在「允许的设备」中选中随身 Mac，点击「开始共享」。保持电脑唤醒，保留共享窗口。
+2. **随身 Mac**：打开「连接设备」，选中家里的电脑，点击「连接」。新窗口会显示对方的主屏幕，点进画面即可操作键鼠。
+3. 临时离开时，在 Mac 上点「断开连接」，稍后可以再连。想结束本次共享，在家里的电脑上点「停止共享」。
+
+<details>
+<summary>从源码运行（开发时使用）</summary>
+
+准备带 Tkinter 的 Python 3.12，在包含 `remote_desktop.py` 的项目目录执行以下命令。
 
 **macOS 或 Linux 终端**
 
@@ -36,17 +57,13 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe remote_desktop.py
 ```
 
-两边都出现设备面板后：
-
-1. **在家里的电脑上**，选中随身电脑，点击「允许所选设备，开始共享」。看到「正在共享本机」后保留这个窗口。
-2. **在随身电脑上**，选中家里的电脑，点击「连接所选设备」。新窗口会显示家中电脑的主屏幕，点进画面即可输入、拖动或滚动。
-3. 关闭查看窗口会结束本次连接，之后可以重新连入。要结束共享，在家里的面板中点击「停止本次共享」。
+</details>
 
 ## 共享与授权
 
 每次开启共享时指定一台允许连接的设备。被控端通过 Tailscale 核对来源设备的稳定节点 ID，同名设备不能继承授权。
 
-如果希望重启后继续使用，在被控端选中控制设备，在「登录后自动共享」中点击「启用所选设备」。下次用户登录图形桌面时，面板会打开并恢复共享。默认需要手动开启。移动项目或虚拟环境后需重新设置登录启动项。
+如果希望重启后继续使用，在被控端的「共享本机」页选好控制设备，再到「登录后自动共享」点击「启用所选设备」。下次登录图形桌面时，面板会打开并恢复共享。该设备以后重连时无需逐次在被控端确认。移动应用或源码目录后，需重新设置登录启动项。
 
 ## 平台限制
 
@@ -54,15 +71,15 @@ py -3.12 -m venv .venv
 
 | 被控端 | 首次使用须知 |
 | --- | --- |
-| macOS | 在「系统设置 → 隐私与安全性」中，为运行程序的终端或 Python 授予屏幕录制和辅助功能权限，然后重新打开程序。 |
+| macOS | 在「系统设置 → 隐私与安全性」中，为已安装的 RemoteDesktop 授予屏幕录制和辅助功能权限（从源码运行时，选择相应的终端或 Python），然后重新打开程序。 |
 | Windows | 在已登录用户的桌面上运行。登录界面和 UAC 安全桌面不在控制范围内。 |
 | Linux | 使用 X11 桌面会话。当前被控端不支持 Wayland。 |
 
-Mac 控制 Linux X11 已在隔离环境中验证。Windows 后端已有模拟测试，Mac 控制 Windows 实机、反向控制 Mac 的完整键鼠会话，以及各系统重启登录后的恢复仍待实机验证。
+Mac 控制 Linux X11 已在隔离环境中验证。Windows 安装、界面启动和卸载在 Wine 中测试过。Mac 控制 Windows 实机、反向控制 Mac 的完整键鼠会话，以及各系统重启登录后的恢复仍待实机验证。
 
 ## 命令与排障
 
-下表中的参数接在 `remote_desktop.py` 后面，解释器沿用上面的启动命令。将 `travel-laptop` 和 `home-pc` 换成设备列表中的实际名称。重名时可用完整 DNS 名或 Tailscale IP。
+使用源码时，下表中的参数接在 `remote_desktop.py` 后面。Linux 安装版可直接运行 `remote-desktop` 加参数；Mac 安装版使用 `/Applications/RemoteDesktop.app/Contents/MacOS/RemoteDesktop`。将 `travel-laptop` 和 `home-pc` 换成设备列表中的实际名称。重名时可用完整 DNS 名或 Tailscale IP。
 
 | 参数 | 执行位置和结果 |
 | --- | --- |
@@ -87,8 +104,11 @@ remotedesk/
 ├── host/               共享服务、屏幕采集和键鼠输入
 ├── network/            Tailscale 设备发现、连接和会话协议
 └── login/              登录共享设置和系统自启动项
+packaging/              Windows、macOS 和 Linux 安装包的构建脚本
 tests/                  会话、授权、登录启动和平台行为测试
 ```
+
+本地构建产物位于 `dist/`。维护者可按平台查看打包说明：[Windows](packaging/windows/README.md) · [macOS](packaging/macos/README.md) · [Linux](packaging/linux/README.md)。
 
 ## 许可证
 

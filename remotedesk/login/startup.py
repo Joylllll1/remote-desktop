@@ -13,7 +13,7 @@ import subprocess
 import sys
 import tempfile
 
-from remotedesk import LAUNCHER
+from remotedesk import LAUNCHER, application_command, command_directory
 
 
 _LABEL = "local.remote-desktop.gui"
@@ -45,14 +45,7 @@ $link.Save()
 
 
 def _command():
-    if not sys.executable:
-        raise RuntimeError("无法确定当前 Python 解释器的位置，不能配置登录自启。")
-    # Do not resolve this symlink: a venv's interpreter must keep using its venv.
-    interpreter = os.path.abspath(sys.executable)
-    script = LAUNCHER
-    if not script.is_file():
-        raise RuntimeError("找不到 remote_desktop.py，不能配置登录自启。")
-    return [interpreter, str(script), "gui", "--login"]
+    return application_command("gui", "--login", launcher=LAUNCHER)
 
 
 def _powershell(script, data=None):
@@ -129,14 +122,15 @@ def enabled() -> bool:
 
 
 def install() -> None:
-    """Register ``python remote_desktop.py gui --login`` for the next login."""
+    """Register the existing visible GUI entry point for the next login."""
     command = _command()
+    directory = command_directory(command)
     path = _entry_path()
     if sys.platform == "darwin":
         _atomic_write(path, plistlib.dumps({
             "Label": _LABEL,
             "ProgramArguments": command,
-            "WorkingDirectory": str(Path(command[1]).parent),
+            "WorkingDirectory": directory,
             "LimitLoadToSessionType": "Aqua",
             "RunAtLoad": True,
         }))
@@ -151,7 +145,7 @@ def install() -> None:
                 "shortcut": str(temporary),
                 "executable": command[0],
                 "arguments": subprocess.list2cmdline(command[1:]),
-                "directory": ntpath.dirname(command[1]),
+                "directory": directory,
             })
             if not temporary.is_file():
                 raise RuntimeError("Windows 未生成登录启动快捷方式。")
@@ -164,7 +158,7 @@ def install() -> None:
             "[Desktop Entry]\nType=Application\nVersion=1.0\nName=自用远程桌面\n"
             "Comment=登录时打开可见的远程桌面控制窗口\n"
             "Exec=" + " ".join(map(_desktop_argument, arguments)) + "\n"
-            "Path=" + _desktop_string(str(Path(command[1]).parent)).replace(" ", "\\s") + "\n"
+            "Path=" + _desktop_string(directory).replace(" ", "\\s") + "\n"
             "Terminal=false\nHidden=false\nX-GNOME-Autostart-enabled=true\n"
         )
         _atomic_write(path, text.encode("utf-8"))

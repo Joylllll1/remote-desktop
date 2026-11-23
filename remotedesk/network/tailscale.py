@@ -34,6 +34,7 @@ def network_status():
     result = subprocess.run(
         [executable("tailscale"), "status", "--json"],
         capture_output=True, encoding="utf-8", errors="replace", timeout=10,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     if result.returncode and not result.stdout.lstrip().startswith("{"):
         raise ValueError("无法读取 Tailscale 状态，请打开 Tailscale 并检查连接。")
@@ -71,7 +72,8 @@ def identify(remote):
     ip, port = remote[:2]
     endpoint = f"[{ip}]:{port}" if ":" in ip else f"{ip}:{port}"
     result = subprocess.run([executable("tailscale"), "whois", "--json", endpoint],
-                            capture_output=True, timeout=5)
+                            capture_output=True, timeout=5,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     if result.returncode:
         return None
     return (json.loads(result.stdout).get("Node") or {}).get("StableID")

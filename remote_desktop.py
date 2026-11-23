@@ -3,6 +3,10 @@
 import subprocess
 import sys
 
+from remotedesk import configure_worker_stdio
+
+configure_worker_stdio()
+
 from remotedesk.cli import main
 
 
