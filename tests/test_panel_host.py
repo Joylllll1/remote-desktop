@@ -45,7 +45,7 @@ class PanelHostTest(unittest.TestCase):
         class Desktop:
             has_held_input = False
 
-            def reset_stream(self):
+            def reset_stream(self, **options):
                 pass
 
             def __enter__(self):

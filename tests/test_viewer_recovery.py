@@ -41,6 +41,26 @@ class Session:
         self.closed.set()
 
 
+class AsyncSession(Session):
+    supports_async_input = True
+
+    def __init__(self):
+        super().__init__()
+        self.blocked = threading.Event()
+        self.sent = []
+
+    def exchange(self, events):
+        self.received.append(events)
+        if len(self.received) == 1:
+            return jpeg()
+        self.blocked.set()
+        self.closed.wait(2)
+        raise EOFError("frame connection closed")
+
+    def send_input(self, events):
+        self.sent.append((time.monotonic(), list(events)))
+
+
 class FakeRoot:
     def __init__(self):
         self.callbacks = []
@@ -350,6 +370,166 @@ class ViewerRecoveryTests(TestCase):
             self.assertFalse(worker.inputs.ready)
             self.assertTrue(worker.inputs.matches(8))
             self.assertFalse(worker.inputs.enable(7))
+
+    def test_async_sender_delivers_controls_release_and_heartbeats_during_blocked_frame(self):
+        session = AsyncSession()
+        worker = self.worker(lambda: session)
+        worker.start()
+        epoch, picture = worker.frames.get(timeout=2)
+        picture.close()
+        worker.frame_shown(epoch)
+        self.assertTrue(session.blocked.wait(1))
+        sender = worker._sender
+        worker.inputs.append({"type": "key", "key": "a", "down": True})
+        wait_until(lambda: any(batch == [{"type": "key", "key": "a", "down": True}] for _, batch in session.sent))
+        worker.inputs.append({"type": "key", "key": "a", "down": False})
+        wait_until(lambda: any(batch == [{"type": "key", "key": "a", "down": False}] for _, batch in session.sent))
+        worker.inputs.pause()
+        wait_until(lambda: any(batch == [{"type": "release"}] for _, batch in session.sent))
+        wait_until(lambda: sum(not batch for _, batch in session.sent) >= 3)
+        self.assertTrue(all(events == [] for events in session.received))
+        self.assertTrue(all(len(batch) <= 128 for _, batch in session.sent))
+        self.assertLess(max(b[0] - a[0] for a, b in zip(session.sent, session.sent[1:])), 0.25)
+        worker.cancel()
+        worker.join(1)
+        self.assertFalse(worker.is_alive())
+        self.assertFalse(sender.is_alive())
+        self.assertIsNone(worker._sender)
+        self.assertTrue(session.closed.is_set())
+
+    def test_async_sender_failure_drives_reconnect_after_old_sender_has_exited(self):
+        trigger = threading.Event()
+
+        class FailingSender(AsyncSession):
+            def send_input(self, events):
+                super().send_input(events)
+                if trigger.is_set():
+                    raise ConnectionResetError("input channel lost")
+
+        first, second = FailingSender(), AsyncSession()
+        opened, old_sender = [], []
+
+        def factory():
+            if opened:
+                self.assertFalse(old_sender[0].is_alive())
+                self.assertIsNone(worker._sender)
+            session = (first, second)[len(opened)]
+            opened.append(session)
+            return session
+
+        worker = self.worker(factory)
+        worker.start()
+        epoch, picture = worker.frames.get(timeout=2)
+        picture.close()
+        worker.frame_shown(epoch)
+        self.assertTrue(first.blocked.wait(1))
+        old_sender.append(worker._sender)
+        worker.inputs.append({"type": "key", "key": "stale", "down": True})
+        trigger.set()
+        next_epoch, picture = worker.frames.get(timeout=2)
+        picture.close()
+        self.assertNotEqual(epoch, next_epoch)
+        self.assertTrue(first.closed.is_set())
+        self.assertFalse(worker.inputs.ready)
+        self.assertFalse(worker.inputs.enable(epoch))
+        self.assertTrue(all(batch == [] for _, batch in second.sent))
+        worker.frame_shown(next_epoch)
+        count = len(first.sent)
+        worker.inputs.append({"type": "key", "key": "c", "down": True})
+        wait_until(lambda: any(batch == [{"type": "key", "key": "c", "down": True}] for _, batch in second.sent))
+        self.assertEqual(len(first.sent), count)
+        self.assertFalse(any(event.get("key") == "stale" for _, batch in second.sent for event in batch))
+        self.assertIn("秒后重试：input channel lost", self.output.getvalue())
+
+    def test_async_sender_bounds_batches_while_receiver_is_blocked(self):
+        session = AsyncSession()
+        worker = self.worker(lambda: session)
+        worker.start()
+        epoch, picture = worker.frames.get(timeout=2)
+        picture.close()
+        worker.frame_shown(epoch)
+        self.assertTrue(session.blocked.wait(1))
+        expected = [{"type": "key", "key": "a", "down": bool(index % 2)} for index in range(300)]
+        for event in expected:
+            worker.inputs.append(event)
+        wait_until(lambda: sum(len(batch) for _, batch in session.sent) >= 300)
+        batches = [batch for _, batch in session.sent if batch]
+        self.assertEqual([len(batch) for batch in batches], [128, 128, 44])
+        self.assertEqual([event for batch in batches for event in batch], expected)
+
+    def test_sender_watchdog_releases_without_tk_callbacks_and_resumes_only_after_shown(self):
+        session = AsyncSession()
+        worker = self.worker(lambda: session)
+        worker.start()
+        epoch, picture = worker.frames.get(timeout=2)
+        picture.close()
+        worker.frame_shown(epoch)
+        self.assertTrue(session.blocked.wait(1))
+        worker.inputs.append({"type": "key", "key": "a", "down": True})
+        wait_until(lambda: any(batch == [{"type": "key", "key": "a", "down": True}] for _, batch in session.sent))
+        # Advance only the successful-render age, without faking thread clocks.
+        with worker._lock:
+            worker._input_shown_at = time.monotonic() - 3
+        wait_until(lambda: any(batch == [{"type": "release"}] for _, batch in session.sent))
+        self.assertFalse(worker.inputs.ready)
+        self.assertTrue(worker.inputs.matches(epoch))
+        worker.inputs.append({"type": "key", "key": "b", "down": True})
+        self.assertEqual(worker.inputs.take(epoch), [])
+        self.assertTrue(worker.frame_shown(epoch))
+        worker.inputs.append({"type": "key", "key": "c", "down": True})
+        wait_until(lambda: any(batch == [{"type": "key", "key": "c", "down": True}] for _, batch in session.sent))
+        self.assertFalse(any(event.get("key") == "b" for _, batch in session.sent for event in batch))
+
+    def test_repeated_pause_preserves_queued_release_and_old_epoch_does_not_refresh_watchdog(self):
+        worker = self.worker(Session)
+        worker.inputs.begin(2)
+        worker.frame_shown(2)
+        with worker._lock:
+            shown_at = worker._input_shown_at
+        self.assertFalse(worker.frame_shown(1))
+        with worker._lock:
+            self.assertEqual(worker._input_shown_at, shown_at)
+            self.assertEqual(worker._input_shown_epoch, 2)
+            worker._input_shown_at = time.monotonic() - 3
+        self.assertFalse(worker._watch_input_freshness(1))
+        self.assertTrue(worker._watch_input_freshness(2))
+        self.assertFalse(worker.inputs.pause(2))  # Tk's later pause cannot erase release.
+        self.assertFalse(worker._watch_input_freshness(2))
+        self.assertEqual(worker.inputs.take(2), [{"type": "release"}])
+
+    def test_async_sender_protocol_failure_is_terminal_without_hidden_thread(self):
+        session = AsyncSession()
+        session.send_input = Mock(side_effect=ValueError("input protocol rejected"))
+        factory = Mock(return_value=session)
+        worker = self.worker(factory)
+        worker.start()
+        worker.join(1)
+        self.assertFalse(worker.is_alive())
+        self.assertIsInstance(worker.terminal_error, ValueError)
+        self.assertEqual(str(worker.terminal_error), "input protocol rejected")
+        self.assertEqual(factory.call_count, 1)
+        self.assertIsNone(worker._sender)
+
+    def test_epoch_specific_take_cannot_steal_new_session_input(self):
+        inputs = viewer._InputBuffer()
+        inputs.begin(2)
+        inputs.enable(2)
+        event = {"type": "key", "key": "c", "down": True}
+        inputs.append(event)
+        self.assertEqual(inputs.take(1), [])
+        self.assertEqual(inputs.take(2), [event])
+
+    def test_legacy_transport_keeps_input_exchange_and_logs_once_per_connection(self):
+        session = Session()
+        worker = self.worker(lambda: session)
+        worker.start()
+        epoch, picture = worker.frames.get(timeout=2)
+        picture.close()
+        worker.frame_shown(epoch)
+        worker.inputs.append({"type": "key", "key": "a", "down": True})
+        wait_until(lambda: any(batch for batch in session.received))
+        self.assertIsNone(worker._sender)
+        self.assertEqual(self.output.getvalue().count("对方共享端使用旧版传输"), 1)
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@
 import json
 import socket
 import struct
+import threading
 import time
 from contextlib import suppress
 
@@ -80,6 +81,9 @@ def serve_connection(conn, authorized, desktop, *, idle_transfer_timeout=None):
 class Session:
     def __init__(self, sock):
         self.sock = sock
+        self._close_lock = threading.Lock()
+        self._stream = None
+        self.supports_async_input = False
         try:
             try:
                 greeting = receive(sock, 128)
@@ -87,13 +91,21 @@ class Session:
                 raise TimeoutError("已接通共享端口，等待设备授权响应超时。") from error
             if greeting == DENIED:
                 raise ValueError("这台电脑未获授权。请在对方的「共享本机」中选中这台电脑，再开始共享。")
-            if greeting != READY:
+            from remotedesk.network.stream import BUSY, READY as STREAM_READY, StreamClient
+            if greeting == BUSY:
+                raise ConnectionError("共享端正在结束上一次会话，请稍候重试。")
+            if greeting == STREAM_READY:
+                self._stream = StreamClient(sock)
+                self.supports_async_input = True
+            elif greeting != READY:
                 raise ValueError("对端运行了其他服务或协议版本不兼容。")
         except BaseException:
             self.close()
             raise
 
     def exchange(self, events):
+        if self._stream is not None:
+            return self._stream.exchange(events)
         check_events(events)
         try:
             send(self.sock, json.dumps(events).encode("utf-8"), MAX_INPUT)
@@ -104,7 +116,13 @@ class Session:
         except TimeoutError as error:
             raise TimeoutError("已获授权，接收桌面画面超时。") from error
 
+    def send_input(self, events):
+        if self._stream is None:
+            raise RuntimeError("请升级共享端以使用独立控制通道。")
+        self._stream.send_input(events)
+
     def close(self):
-        with suppress(OSError):
-            self.sock.shutdown(socket.SHUT_RDWR)
-        self.sock.close()
+        with self._close_lock:
+            with suppress(OSError):
+                self.sock.shutdown(socket.SHUT_RDWR)
+            self.sock.close()

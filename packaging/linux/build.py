@@ -56,7 +56,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--wheel-dir', type=Path)
     parser.add_argument('--output', type=Path, default=ROOT/'dist/RemoteDesktop-Linux-amd64.deb')
-    parser.add_argument('--version', default='0.1.2')
+    parser.add_argument('--version', default='0.1.4')
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='remote-desktop-deb-') as temporary:
         work = Path(temporary)

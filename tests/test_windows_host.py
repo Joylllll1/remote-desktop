@@ -13,6 +13,24 @@ from remotedesk.host.desktop import Desktop
 
 
 class WindowsHostRegressionTests(unittest.TestCase):
+    def test_unchanged_replies_do_not_raise_quality_and_force_full_frames(self):
+        desktop = Desktop()
+        desktop.reset_stream(minimum_width=1280)
+        with patch("remotedesk.host.desktop.time.monotonic") as clock:
+            clock.side_effect = [i / 10 for i in range(100)]
+            for _ in range(100):
+                self.assertEqual(desktop._frame_profile(), (1280, 55))
+                desktop.frame_transmitted(False)
+
+    def test_stream_quality_floor_survives_slow_requests_and_reconnect(self):
+        desktop = Desktop()
+        desktop.reset_stream(minimum_width=1280)
+        with patch("remotedesk.host.desktop.time.monotonic", side_effect=[0, 2, 5, 9]):
+            for _ in range(3):
+                self.assertEqual(desktop._frame_profile(), (1280, 55))
+            desktop.reset_stream(minimum_width=1280)
+            self.assertEqual(desktop._frame_profile(), (1280, 55))
+
     def test_quality_restarts_small_and_adapts_to_the_request_interval(self):
         desktop = Desktop()
         with patch("remotedesk.host.desktop.time.monotonic") as clock:

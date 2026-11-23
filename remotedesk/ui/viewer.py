@@ -92,14 +92,16 @@ class _InputBuffer:
     def disable(self):
         self.begin(None)
 
-    def pause(self):
+    def pause(self, epoch=None):
         """Drop pending controls but keep this session eligible for a new frame."""
         with self._lock:
-            was_enabled = self._enabled
+            if not self._enabled or (epoch is not None and self._epoch != epoch):
+                return False
             self._enabled = False
             self._events.clear()
-            if was_enabled and self._epoch is not None:
+            if self._epoch is not None:
                 self._events.append({"type": "release"})
+            return True
 
     def matches(self, epoch):
         with self._lock:
@@ -125,8 +127,10 @@ class _InputBuffer:
             else:
                 self._events.append(event)
 
-    def take(self):
+    def take(self, epoch=None):
         with self._lock:
+            if epoch is not None and self._epoch != epoch:
+                return []
             return [self._events.popleft() for _ in range(min(128, len(self._events)))]
 
 
@@ -142,8 +146,10 @@ class _RecoveryWorker(threading.Thread):
         self._cancelled = threading.Event()
         self._lock = threading.Lock()
         self._session = None
+        self._sender = self._sender_stop = None
         self._terminal_error = None
         self._shown_epoch = None
+        self._input_shown_epoch = self._input_shown_at = None
         self._failures = 0
         self._created_at = time.monotonic()
         self._displayed_frames = self._total_displayed = 0
@@ -160,6 +166,9 @@ class _RecoveryWorker(threading.Thread):
         self.inputs.disable()
         with self._lock:
             session = self._session
+            sender_stop = self._sender_stop
+        if sender_stop is not None:
+            sender_stop.set()
         if session is not None:
             self._close_session(session)
 
@@ -181,12 +190,12 @@ class _RecoveryWorker(threading.Thread):
             self.states.put(("terminal", error))
 
     def frame_shown(self, epoch):
-        control_ready = self.inputs.enable(epoch)
         with self._lock:
             if self._terminal_error is not None or self._cancelled.is_set():
                 self.inputs.disable()
                 return False
             now = time.monotonic()
+            control_ready = self.inputs.enable(epoch)
             first = self._shown_epoch != epoch
             if first:
                 self._displayed_frames = 0
@@ -196,6 +205,7 @@ class _RecoveryWorker(threading.Thread):
             self._shown_epoch = epoch
             if control_ready:
                 self._failures = 0
+                self._input_shown_epoch, self._input_shown_at = epoch, now
             checkpoint = now - self._last_checkpoint >= 30
             count, elapsed = self._displayed_frames, int(now - self._shown_started)
             if checkpoint:
@@ -219,6 +229,40 @@ class _RecoveryWorker(threading.Thread):
                 return
             frame.close()
 
+    def _send_inputs(self, session, epoch, stopped, errors):
+        try:
+            while not stopped.is_set() and not self._cancelled.is_set():
+                if not self.inputs.matches(epoch):
+                    return
+                self._watch_input_freshness(epoch)
+                events = self.inputs.take(epoch)
+                if stopped.is_set() or self._cancelled.is_set():
+                    return
+                session.send_input(events)
+                stopped.wait(0.05)
+        except Exception as error:
+            if not stopped.is_set() and not self._cancelled.is_set():
+                errors.put_nowait(error)
+                stopped.set()
+                self.inputs.disable()
+                self._close_session(session)  # Interrupt a blocked frame read.
+
+    def _watch_input_freshness(self, epoch):
+        # The sender must release held input even if Tk stops polling entirely.
+        with self._lock:
+            if (self._input_shown_epoch == epoch and self._input_shown_at is not None
+                    and time.monotonic() - self._input_shown_at >= 2 and self.inputs.ready):
+                return self.inputs.pause(epoch)
+        return False
+
+    @staticmethod
+    def _raise_sender_error(errors):
+        try:
+            error = errors.get_nowait()
+        except queue.Empty:
+            return
+        raise error
+
     def run(self):
         epoch = 0
         while not self._cancelled.is_set():
@@ -228,6 +272,10 @@ class _RecoveryWorker(threading.Thread):
             _lifecycle(("正在连接 %s…" if epoch == 1 else "正在重新连接 %s…") % self.title)
             session = None
             failure = None
+            caught = None
+            sender = None
+            sender_stop = threading.Event()
+            sender_errors = queue.Queue(maxsize=1)
             try:
                 session = self._factory()
                 with self._lock:
@@ -235,11 +283,24 @@ class _RecoveryWorker(threading.Thread):
                         self._session = session
                 if self._cancelled.is_set():
                     break
+                asynchronous = bool(getattr(session, "supports_async_input", False))
+                if asynchronous:
+                    sender = threading.Thread(target=self._send_inputs,
+                        args=(session, epoch, sender_stop, sender_errors),
+                        name="desktop-input-%d" % epoch, daemon=True)
+                    with self._lock:
+                        self._sender, self._sender_stop = sender, sender_stop
+                    sender.start()
+                    _lifecycle("已启用独立键鼠输入通道。")
+                else:
+                    _lifecycle("对方共享端使用旧版传输，键鼠输入需等待画面传输。")
                 self.states.put(("receiving", epoch))
                 _lifecycle("已连接 %s，正在接收画面。" % self.title)
                 while not self._cancelled.is_set():
                     started = time.monotonic()
-                    jpeg = session.exchange(self.inputs.take())
+                    self._raise_sender_error(sender_errors)
+                    jpeg = session.exchange([] if asynchronous else self.inputs.take(epoch))
+                    self._raise_sender_error(sender_errors)
                     if self._cancelled.is_set():
                         break
                     try:
@@ -254,22 +315,37 @@ class _RecoveryWorker(threading.Thread):
                     self._discard_frames()
                     self.frames.put_nowait((epoch, frame))
                     self._cancelled.wait(max(0, 0.1 - (time.monotonic() - started)))
-            except ValueError as error:
-                self.fail(error)
             except Exception as error:
-                if not self._cancelled.is_set():
-                    if isinstance(error, (OSError, EOFError)) and self._can_reconnect:
-                        failure = error
-                    else:
-                        self.fail(error if isinstance(error, (OSError, EOFError, RuntimeError)) else RuntimeError(str(error)))
+                caught = error
             finally:
+                sender_stop.set()
                 self.inputs.disable()
                 if self._cancelled.is_set():
                     self._discard_frames()
-                with self._lock:
-                    self._session = None
                 if session is not None:
                     self._close_session(session)
+                sender_stuck = False
+                if sender is not None:
+                    sender.join(timeout=1)
+                    if sender.is_alive():
+                        sender_stuck = True
+                        caught = RuntimeError("键鼠发送未能停止，请关闭窗口后重新连接。")
+                try:
+                    sender_error = sender_errors.get_nowait()
+                except queue.Empty:
+                    pass
+                else:
+                    if not sender_stuck:
+                        caught = sender_error
+                with self._lock:
+                    self._session = self._sender = self._sender_stop = None
+            if isinstance(caught, ValueError):
+                self.fail(caught)
+            elif caught is not None and not self._cancelled.is_set():
+                if isinstance(caught, (OSError, EOFError)) and self._can_reconnect:
+                    failure = caught
+                else:
+                    self.fail(caught if isinstance(caught, (OSError, EOFError, RuntimeError)) else RuntimeError(str(caught)))
             if failure is not None and not self._cancelled.is_set():
                 with self._lock:
                     delay = _RETRY_DELAYS[min(self._failures, len(_RETRY_DELAYS) - 1)]

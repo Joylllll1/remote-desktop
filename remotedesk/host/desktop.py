@@ -52,17 +52,24 @@ class Desktop:
         self._held_keys = {}
         self.reset_stream()
 
-    def reset_stream(self):
-        self._frame_level = 0
+    def reset_stream(self, *, minimum_width=800):
+        self._minimum_level = next((i for i, (width, _) in enumerate(self._FRAME_PROFILES)
+                                    if width >= minimum_width), len(self._FRAME_PROFILES) - 1)
+        self._frame_level = self._minimum_level
         self._fast_frames = 0
         self._last_frame_start = None
+        self._measure_previous_frame = True
+
+    def frame_transmitted(self, changed):
+        # A tiny unchanged reply measures RTT, not full-image bandwidth.
+        self._measure_previous_frame = changed
 
     def _frame_profile(self):
         now = time.monotonic()
-        if self._last_frame_start is not None:
+        if self._last_frame_start is not None and self._measure_previous_frame:
             interval = now - self._last_frame_start
             if interval >= 0.65:
-                self._frame_level = max(0, self._frame_level - 1)
+                self._frame_level = max(self._minimum_level, self._frame_level - 1)
                 self._fast_frames = 0
             elif interval <= 0.30:
                 self._fast_frames += 1
@@ -72,6 +79,7 @@ class Desktop:
             else:
                 self._fast_frames = 0
         self._last_frame_start = now
+        self._measure_previous_frame = True
         width, quality = self._FRAME_PROFILES[self._frame_level]
         return min(self.MAX_WIDTH, width), min(self.JPEG_QUALITY, quality)
 
