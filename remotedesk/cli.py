@@ -5,7 +5,7 @@ import subprocess
 import sys
 
 from remotedesk.host.server import host
-from remotedesk.network.client import check_connection, connect_to
+from remotedesk.network.client import check_connection, open_viewer_session
 from remotedesk.network.tailscale import address, aliases, executable, find_peer, network_status, peer_by_id
 
 
@@ -60,8 +60,6 @@ def main():
         subprocess.Popen([executable("rustdesk"), "--connect", endpoint])
     else:
         from remotedesk.ui.viewer import run_viewer
-        session = connect_to(peer)
-        try:
-            run_viewer(session, peer["HostName"])
-        finally:
-            session.close()
+        if not peer.get("ID"):
+            raise ValueError("目标设备缺少稳定身份，请刷新设备列表。")
+        run_viewer(lambda: open_viewer_session(peer["ID"]), peer["HostName"])

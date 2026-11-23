@@ -4,8 +4,9 @@ import socket
 import struct
 import threading
 import unittest
+from unittest.mock import Mock, patch
 
-from remotedesk.network.session import Session, serve_connection
+from remotedesk.network.session import Session, receive, serve_connection
 
 
 class FakeDesktop:
@@ -22,6 +23,25 @@ class FakeDesktop:
 
 
 class SessionTests(unittest.TestCase):
+    def test_slow_header_and_body_share_one_deadline(self):
+        sock = Mock()
+        sock.gettimeout.return_value = 12
+        sock.recv.side_effect = [struct.pack('!I', 4), b'a', b'bcd']
+        with patch('remotedesk.network.session.time.monotonic', side_effect=[100, 101, 103, 111]):
+            with self.assertRaises(TimeoutError):
+                receive(sock, 32, frame_timeout=10)
+        self.assertEqual(sock.recv.call_count, 2)
+        self.assertEqual([call.args[0] for call in sock.settimeout.call_args_list], [9, 7, 12])
+
+    def test_host_gives_slow_transfers_longer_only_while_no_input_is_held(self):
+        conn, desktop = Mock(), Mock()
+        requests = (b'[]', b'[{"type":"key","key":"x","down":true}]')
+        conn.recv.side_effect = [part for body in requests for part in (struct.pack('!I', len(body)), body)] + [b'']
+        desktop.frame.return_value = b'picture'
+        desktop.apply.side_effect = lambda events: setattr(desktop, 'has_held_input', bool(events))
+        serve_connection(conn, True, desktop, idle_transfer_timeout=45)
+        self.assertEqual([call.args[0] for call in conn.settimeout.call_args_list], [45, 12])
+
     def setUp(self):
         self.desktop = FakeDesktop()
         self.errors = []

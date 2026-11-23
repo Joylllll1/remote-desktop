@@ -43,6 +43,11 @@ class PanelHostTest(unittest.TestCase):
         failures = []
 
         class Desktop:
+            has_held_input = False
+
+            def reset_stream(self):
+                pass
+
             def __enter__(self):
                 return self
 

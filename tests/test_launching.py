@@ -116,7 +116,6 @@ class PanelCommandTests(unittest.TestCase):
         patch.object(sys, "frozen", False, create=True).start()
         self.spawn = patch.object(panel.subprocess, "Popen", return_value=self.process).start()
         patch.object(panel.threading, "Thread").start()
-        patch.object(panel.tempfile, "TemporaryFile", side_effect=lambda **kwargs: io.BytesIO()).start()
 
     def test_frozen_panel_routes_all_existing_actions_without_source_file(self):
         executable = self.root / "RemoteDesktop.app" / "Contents" / "MacOS" / "RemoteDesktop"

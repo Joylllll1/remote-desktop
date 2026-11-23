@@ -57,8 +57,9 @@ def host(self_node, peer, *, panel_input=None):
                         conn.settimeout(12)
                         authorized = identify(remote) == expected
                         if authorized:
+                            desktop.reset_stream()
                             print(f"{peer['HostName']} 已连接。", flush=True)
-                        serve_connection(conn, authorized, desktop)
+                        serve_connection(conn, authorized, desktop, idle_transfer_timeout=45)
                         if authorized:
                             print("会话已结束，等待重新连接。", flush=True)
                     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:

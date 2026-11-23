@@ -3,18 +3,26 @@
 import json
 import socket
 import struct
+import time
 from contextlib import suppress
 
 PORT = 47650
 MAX_INPUT = 64 * 1024
 MAX_FRAME = 12 * 1024 * 1024
+FRAME_IDLE_TIMEOUT = 25
+FRAME_TOTAL_TIMEOUT = 60
 READY = b"remote-desktop/1 ready"
 DENIED = b"remote-desktop/1 denied"
 
 
-def read_exact(sock, size):
+def read_exact(sock, size, *, deadline=None):
     data = bytearray()
     while len(data) < size:
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("整帧传输超过等待时间。")
+            sock.settimeout(min(FRAME_IDLE_TIMEOUT, remaining))
         block = sock.recv(min(size - len(data), 64 * 1024))
         if not block:
             raise EOFError("对端已断开连接。")
@@ -22,11 +30,18 @@ def read_exact(sock, size):
     return bytes(data)
 
 
-def receive(sock, limit):
-    size, = struct.unpack("!I", read_exact(sock, 4))
-    if not 0 < size <= limit:
-        raise ValueError("远程桌面数据包长度无效。")
-    return read_exact(sock, size)
+def receive(sock, limit, *, frame_timeout=None):
+    deadline = time.monotonic() + frame_timeout if frame_timeout is not None else None
+    previous_timeout = sock.gettimeout() if deadline is not None else None
+    try:
+        size, = struct.unpack("!I", read_exact(sock, 4, deadline=deadline))
+        if not 0 < size <= limit:
+            raise ValueError("远程桌面数据包长度无效。")
+        return read_exact(sock, size, deadline=deadline)
+    finally:
+        if deadline is not None:
+            with suppress(OSError):
+                sock.settimeout(previous_timeout)
 
 
 def send(sock, data, limit):
@@ -40,7 +55,7 @@ def check_events(events):
         raise ValueError("输入事件格式无效或数量过多。")
 
 
-def serve_connection(conn, authorized, desktop):
+def serve_connection(conn, authorized, desktop, *, idle_transfer_timeout=None):
     if not authorized:
         send(conn, DENIED, 128)
         return
@@ -50,6 +65,11 @@ def serve_connection(conn, authorized, desktop):
             events = json.loads(receive(conn, MAX_INPUT))
             check_events(events)
             desktop.apply(events)
+            if idle_transfer_timeout is not None:
+                # A slow viewer can still be downloading the previous frame
+                # after sendall returns. Keep a shorter release deadline when
+                # it is holding a key or dragging with a mouse button.
+                conn.settimeout(12 if desktop.has_held_input else idle_transfer_timeout)
             send(conn, desktop.frame(), MAX_FRAME)
     except EOFError:
         pass
@@ -61,9 +81,12 @@ class Session:
     def __init__(self, sock):
         self.sock = sock
         try:
-            greeting = receive(sock, 128)
+            try:
+                greeting = receive(sock, 128)
+            except TimeoutError as error:
+                raise TimeoutError("已接通共享端口，等待设备授权响应超时。") from error
             if greeting == DENIED:
-                raise ValueError("家中电脑尚未授权当前设备，请检查 host --allow 的设备名。")
+                raise ValueError("这台电脑未获授权。请在对方的「共享本机」中选中这台电脑，再开始共享。")
             if greeting != READY:
                 raise ValueError("对端运行了其他服务或协议版本不兼容。")
         except BaseException:
@@ -72,8 +95,14 @@ class Session:
 
     def exchange(self, events):
         check_events(events)
-        send(self.sock, json.dumps(events).encode("utf-8"), MAX_INPUT)
-        return receive(self.sock, MAX_FRAME)
+        try:
+            send(self.sock, json.dumps(events).encode("utf-8"), MAX_INPUT)
+        except TimeoutError as error:
+            raise TimeoutError("发送画面请求超时。") from error
+        try:
+            return receive(self.sock, MAX_FRAME, frame_timeout=FRAME_TOTAL_TIMEOUT)
+        except TimeoutError as error:
+            raise TimeoutError("已获授权，接收桌面画面超时。") from error
 
     def close(self):
         with suppress(OSError):

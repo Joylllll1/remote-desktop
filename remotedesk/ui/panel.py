@@ -7,7 +7,6 @@ from pathlib import Path
 import queue
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 
@@ -15,6 +14,82 @@ from remotedesk import application_command, command_directory
 
 
 _RETRY_DELAYS = (2, 5, 10, 20, 30)
+_VIEWER_LINE_LIMIT = 2000
+_VIEWER_PENDING_LINES = 64
+_VIEWER_HISTORY_LIMIT = 32
+
+
+class _ViewerOutput:
+    """Bound each worker's retained output and queued UI notification count."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._pending = deque(maxlen=_VIEWER_PENDING_LINES)
+        self._tail = deque(maxlen=30)
+        self._notified = False
+        self._dropped = 0
+
+    def append(self, line):
+        line = str(line).strip()
+        if not line:
+            return False
+        if len(line) > _VIEWER_LINE_LIMIT:
+            line = line[:_VIEWER_LINE_LIMIT - 1] + "…"
+        with self._lock:
+            if len(self._pending) == self._pending.maxlen:
+                self._dropped += 1
+            self._pending.append(line)
+            self._tail.append(line)
+            notify = not self._notified
+            self._notified = True
+            return notify
+
+    def take(self):
+        with self._lock:
+            lines, dropped = list(self._pending), self._dropped
+            self._pending.clear()
+            self._dropped = 0
+            self._notified = False
+            return lines, dropped
+
+    def last_detail(self):
+        with self._lock:
+            return next((line for line in reversed(self._tail)
+                         if not line.startswith("[查看器] 已关闭 ")), "")
+
+
+def _watch_viewer(process, output, messages, identity, name):
+    """Drain captured UTF-8 output even when the panel is busy or has closed."""
+    def publish(line):
+        if output.append(line):
+            messages.put(("viewer_output", identity, name, process, output))
+
+    try:
+        while True:
+            chunk = process.stdout.readline(_VIEWER_LINE_LIMIT + 1)
+            if not chunk:
+                break
+            line = chunk.rstrip("\r\n")
+            if len(line) > _VIEWER_LINE_LIMIT:
+                line = line[:_VIEWER_LINE_LIMIT - 15] + "…（此行过长，已截断）"
+                # Discard the rest of this physical line without an unbounded
+                # read or flooding the UI with pieces of a single long line.
+                while chunk and not chunk.endswith("\n"):
+                    chunk = process.stdout.readline(_VIEWER_LINE_LIMIT + 1)
+            publish(line)
+    except (OSError, ValueError) as error:
+        publish("无法读取查看器状态：" + str(error))
+    finally:
+        try:
+            process.stdout.close()
+        except (OSError, ValueError):
+            pass
+    try:
+        code = process.wait()
+    except (OSError, ValueError) as error:
+        publish("无法确认查看器退出状态：" + str(error))
+        code = 1
+    messages.put(("viewer_exit", identity, name, process, code, output))
 
 
 def _port_in_use(text):
@@ -84,6 +159,7 @@ class _Panel:
         self._host_state = "stopped"
         self._host_tail = deque(maxlen=30)
         self._viewers = {}
+        self._viewer_status = {}
         self._retry_job = None
         self._retry_deadline = None
         self._retry_attempt = 0
@@ -324,6 +400,7 @@ class _Panel:
         active = bool(self._host_process and self._host_process.poll() is None)
         viewer = self._viewers.get(peer.get("ID")) if peer else None
         viewing = bool(viewer and viewer.poll() is None)
+        viewer_status = getattr(self, "_viewer_status", {}).get(peer.get("ID")) if peer else None
         disabled = self._closing or self._closed
         sharing_mode = self._mode() == "share"
         controls = (
@@ -347,6 +424,8 @@ class _Panel:
             self.selection_text.set("选择在线设备，然后连接。")
         elif not has_identity:
             self.selection_text.set("设备身份不可用，请刷新。")
+        elif viewer_status and (not viewing or viewer_status[0] is viewer):
+            self.selection_text.set(self._compact("%s：%s" % (peer["HostName"], viewer_status[1]), 108))
         elif viewing:
             self.selection_text.set("%s 的查看器已打开。" % peer["HostName"])
         else:
@@ -495,31 +574,67 @@ class _Panel:
         if existing and existing.poll() is None:
             return
         self._clear_notice()
-        output = tempfile.TemporaryFile(mode="w+b")
+        identity, name = peer["ID"], peer["HostName"]
+        self._viewers.pop(identity, None)
         try:
-            command = application_command("connect-id", peer["ID"], worker=True, launcher=self.script)
+            command = application_command("connect-id", identity, worker=True, launcher=self.script)
             process = subprocess.Popen(command,
-                                       stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                       text=True, encoding="utf-8", errors="replace", bufsize=1,
                                        **self._child_options(command, independent=True))
         except Exception as error:
-            output.close()
-            self._log("无法打开 %s 的查看器：%s" % (peer["HostName"], error))
-            self._show_failure("无法连接 %s：%s" % (peer["HostName"], error))
+            self._remember_viewer_status(identity, None, "连接失败：" + str(error))
+            self._log("无法打开 %s 的查看器：%s" % (name, error))
+            self._show_failure("无法连接 %s：%s" % (name, error))
             self.selection_text.set("连接失败，可查看问题详情。")
             return
-        self._viewers[peer["ID"]] = process
-        self._log("正在打开 %s 的远程桌面。" % peer["HostName"])
+        self._viewers[identity] = process
+        self._remember_viewer_status(identity, process, "正在打开远程桌面…")
+        self._log("正在打开 %s 的远程桌面。" % name)
         self._update_controls()
+        output = _ViewerOutput()
+        threading.Thread(target=_watch_viewer,
+                         args=(process, output, self._messages, identity, name),
+                         name="desktop-viewer-status", daemon=True).start()
 
-        def watch():
-            try:
-                code = process.wait()
-                output.seek(0)
-                message = output.read()[-12000:].decode("utf-8", errors="replace").strip()
-            finally:
-                output.close()
-            self._messages.put(("viewer_exit", peer["ID"], peer["HostName"], process, code, message))
-        threading.Thread(target=watch, name="desktop-viewer-status", daemon=True).start()
+    def _remember_viewer_status(self, identity, process, text):
+        if not hasattr(self, "_viewer_status"):
+            self._viewer_status = {}
+        self._viewer_status.pop(identity, None)
+        self._viewer_status[identity] = (process, text)
+        while len(self._viewer_status) > _VIEWER_HISTORY_LIMIT:
+            self._viewer_status.pop(next(iter(self._viewer_status)))
+
+    def _viewer_output(self, identity, name, process, output):
+        lines, dropped = output.take()
+        current = self._viewers.get(identity) is process
+        label = name if current else name + "（上次连接）"
+        if dropped:
+            self._log("%s：输出较多，已省略较早的 %d 条状态。" % (label, dropped))
+        for line in lines:
+            self._log("%s：%s" % (label, line))
+        if current and lines:
+            self._remember_viewer_status(identity, process, lines[-1])
+            self._update_controls()
+
+    def _viewer_exit(self, identity, name, process, code, output):
+        self._viewer_output(identity, name, process, output)
+        current = self._viewers.get(identity) is process
+        detail = output.last_detail()
+        if code:
+            status = "连接已终止：%s" % (detail or "查看器退出码 %s" % code)
+        else:
+            status = "查看器已关闭；连接记录保留在详情中。"
+            if detail:
+                status += "关闭前：" + self._compact(detail, 180)
+        label = name if current else name + "（上次连接）"
+        self._log("%s：%s" % (label, status))
+        if current:
+            self._viewers.pop(identity, None)
+            self._remember_viewer_status(identity, process, status)
+            if code:
+                self._show_failure("%s：%s" % (name, status))
+            self._update_controls()
 
     def start_host(self):
         peer = self._selected()
@@ -719,15 +834,10 @@ class _Panel:
                 self._host_line(*values)
             elif kind == "host_exit":
                 self._host_exit(*values)
+            elif kind == "viewer_output":
+                self._viewer_output(*values)
             elif kind == "viewer_exit":
-                identity, name, process, code, text = values
-                if self._viewers.get(identity) is process:
-                    self._viewers.pop(identity, None)
-                self._log(("%s 的连接失败：%s" % (name, text or "进程退出码 %s" % code))
-                          if code else "%s 的查看器已关闭。" % name)
-                if code:
-                    self._show_failure("无法连接 %s：%s" % (name, text or "进程退出码 %s" % code))
-                self._update_controls()
+                self._viewer_exit(*values)
             elif kind == "preference":
                 peer, error, lookup_error = values
                 self._preference_busy = False

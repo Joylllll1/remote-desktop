@@ -13,6 +13,20 @@ from remotedesk.host.desktop import Desktop
 
 
 class WindowsHostRegressionTests(unittest.TestCase):
+    def test_quality_restarts_small_and_adapts_to_the_request_interval(self):
+        desktop = Desktop()
+        with patch("remotedesk.host.desktop.time.monotonic") as clock:
+            clock.side_effect = [0, *[i / 5 for i in range(1, 17)], 6, 9, 10]
+            first = desktop._frame_profile()
+            for _ in range(16):
+                fast = desktop._frame_profile()
+            self.assertEqual(fast, (1920, 70))
+            self.assertLess(desktop._frame_profile()[0], fast[0])
+            self.assertEqual(desktop._frame_profile(), first)
+            desktop.reset_stream()
+            self.assertEqual(desktop._frame_profile(), first)
+        self.assertLess(first[0], fast[0])
+
     def test_dpi_capture_initializes_before_input_and_resize_keeps_physical_coordinates(self):
         # Windows input and capture must share DPI awareness. Initializing an
         # input controller before MSS can lock in incompatible coordinates.

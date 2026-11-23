@@ -11,6 +11,7 @@ import io
 import logging
 import os
 import sys
+import time
 
 
 class Desktop:
@@ -26,6 +27,9 @@ class Desktop:
     MAX_HELD_KEYS = 64
     JPEG_QUALITY = 70
     MAX_WIDTH = 1920
+    # Start with a small first frame. The next request arrives only after the
+    # viewer has received and decoded the previous one (including on v1 clients).
+    _FRAME_PROFILES = ((800, 42), (1280, 55), (1920, 70))
     # These valid pynput names are absent from some platforms' Key enums.
     _OPTIONAL_KEYS = {"insert", "menu", "num_lock", "pause", "print_screen", "scroll_lock"}
     _FIELDS = {
@@ -46,6 +50,30 @@ class Desktop:
         self._key_names = {}
         self._held_buttons = {}
         self._held_keys = {}
+        self.reset_stream()
+
+    def reset_stream(self):
+        self._frame_level = 0
+        self._fast_frames = 0
+        self._last_frame_start = None
+
+    def _frame_profile(self):
+        now = time.monotonic()
+        if self._last_frame_start is not None:
+            interval = now - self._last_frame_start
+            if interval >= 0.65:
+                self._frame_level = max(0, self._frame_level - 1)
+                self._fast_frames = 0
+            elif interval <= 0.30:
+                self._fast_frames += 1
+                if self._fast_frames >= 8:
+                    self._frame_level = min(len(self._FRAME_PROFILES) - 1, self._frame_level + 1)
+                    self._fast_frames = 0
+            else:
+                self._fast_frames = 0
+        self._last_frame_start = now
+        width, quality = self._FRAME_PROFILES[self._frame_level]
+        return min(self.MAX_WIDTH, width), min(self.JPEG_QUALITY, quality)
 
     @staticmethod
     def _platform_hint():
@@ -169,9 +197,14 @@ class Desktop:
         if self._capture is None:
             raise RuntimeError("Use Desktop inside a with block")
 
+    @property
+    def has_held_input(self):
+        return bool(self._held_keys or self._held_buttons)
+
     def frame(self) -> bytes:
         """Return a JPEG of the selected display, optionally reduced in width."""
         self._require_open()
+        max_width, quality = self._frame_profile()
         try:
             shot = self._capture.grab(self._monitor)
             # shot.size is in captured pixels; the monitor may instead be in
@@ -179,13 +212,13 @@ class Desktop:
             with self._image.frombytes(
                 "RGB", shot.size, shot.bgra, "raw", "BGRX"
             ) as image:
-                if image.width > self.MAX_WIDTH:
-                    height = max(1, round(image.height * self.MAX_WIDTH / image.width))
+                if image.width > max_width:
+                    height = max(1, round(image.height * max_width / image.width))
                     image.thumbnail(
-                        (self.MAX_WIDTH, height), self._image.Resampling.LANCZOS
+                        (max_width, height), self._image.Resampling.BILINEAR
                     )
                 output = io.BytesIO()
-                image.save(output, format="JPEG", quality=self.JPEG_QUALITY)
+                image.save(output, format="JPEG", quality=quality)
                 return output.getvalue()
         except Exception as error:
             raise RuntimeError(
