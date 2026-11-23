@@ -112,7 +112,7 @@ class StreamTests(unittest.TestCase):
                 if legacy:
                     session.serve_connection(server, True, desktop)
                 else:
-                    stream.serve_stream(server, desktop)
+                    stream.serve_stream(server, desktop, version=2)
             except Exception as error:
                 errors.append(error)
             finally:
@@ -282,7 +282,7 @@ class StreamTests(unittest.TestCase):
         for payload in (b'U', b'J', b'Xfake'):
             with self.subTest(payload=payload):
                 client_socket, server = self.pair()
-                session.send(server, stream.READY, 128)
+                session.send(server, stream.READY_V2, 128)
                 client = session.Session(client_socket)
                 session.send(server, payload, session.MAX_FRAME + 1)
                 with self.assertRaises(ValueError):

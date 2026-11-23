@@ -61,6 +61,41 @@ class AsyncSession(Session):
         self.sent.append((time.monotonic(), list(events)))
 
 
+class ImageSession(AsyncSession):
+    supports_resolution_control = True
+
+    def __init__(self):
+        super().__init__()
+        self.width = None
+        self.applied = []
+        self.requests = []
+        self.entered = threading.Event()
+        self.allow_first = threading.Event()
+        self.allow_first.set()
+        self.images = []
+
+    def set_resolution(self, width):
+        self.width = width
+        self.applied.append((threading.get_ident(), width))
+
+    def exchange_image(self, events):
+        self.received.append(events)
+        self.requests.append(self.width)
+        self.entered.set()
+        if len(self.requests) == 1:
+            self.allow_first.wait(2)
+            image = Image.new("RGB", (24, 16))
+            self.images.append(image)
+            return image
+        self.blocked.set()
+        self.closed.wait(2)
+        raise EOFError("image connection closed")
+
+    def close(self):
+        super().close()
+        self.allow_first.set()
+
+
 class FakeRoot:
     def __init__(self):
         self.callbacks = []
@@ -86,6 +121,10 @@ def fake_view(worker):
     window.canvas = Mock()
     window._indicator = Mock()
     window._disconnect = Mock()
+    window._resolution_combo = Mock()
+    window._resolution_hint = Mock()
+    window._resolution_choice = Mock()
+    window._resolution_choice.get.return_value = "清晰 · 1920"
     window.status = Mock()
     window._worker, window._input, window._frames = worker, worker.inputs, worker.frames
     window._closed = window._ended = False
@@ -530,6 +569,122 @@ class ViewerRecoveryTests(TestCase):
         wait_until(lambda: any(batch for batch in session.received))
         self.assertIsNone(worker._sender)
         self.assertEqual(self.output.getvalue().count("对方共享端使用旧版传输"), 1)
+
+    def test_selected_resolution_is_applied_on_connect_and_direct_image_is_not_redecoded(self):
+        session = ImageSession()
+        session.exchange = Mock(side_effect=AssertionError("JPEG exchange must not be used"))
+        worker = self.worker(lambda: session)
+        worker.set_resolution(1280)
+        with patch.object(Image, "open", side_effect=AssertionError("No JPEG redecode needed")):
+            worker.start()
+            _, picture = worker.frames.get(timeout=2)
+            self.assertIs(picture, session.images[0])
+            self.assertEqual(session.requests[0], 1280)
+            self.assertTrue(all(width == 1280 for _, width in session.applied))
+            worker.cancel()
+            worker.join(1)
+        self.assertEqual(picture.getpixel((0, 0)), (0, 0, 0))  # UI owns popped image.
+        picture.close()
+        session.exchange.assert_not_called()
+
+    def test_resolution_switch_during_receive_applies_only_to_next_request(self):
+        session = ImageSession()
+        session.allow_first.clear()
+        worker = self.worker(lambda: session)
+        worker.start()
+        self.assertTrue(session.entered.wait(1))
+        self.assertEqual(session.requests, [1920])
+        before = list(session.applied)
+        worker.set_resolution(1280)
+        self.assertEqual(session.applied, before)
+        session.allow_first.set()
+        _, picture = worker.frames.get(timeout=2)
+        picture.close()
+        self.assertTrue(session.blocked.wait(1))
+        self.assertEqual(session.requests, [1920, 1280])
+        self.assertTrue(all(identity == worker.ident for identity, _ in session.applied))
+
+    def test_resolution_choice_survives_reconnect(self):
+        first, second = ImageSession(), ImageSession()
+        first.exchange_image = Mock(side_effect=ConnectionResetError("reopen profile"))
+        sessions = iter((first, second))
+        worker = self.worker(lambda: next(sessions))
+        worker.set_resolution(1280)
+        worker.start()
+        epoch, picture = worker.frames.get(timeout=2)
+        picture.close()
+        self.assertEqual(epoch, 2)
+        self.assertTrue(first.closed.is_set())
+        self.assertTrue(all(width == 1280 for _, width in first.applied + second.applied))
+        self.assertEqual(second.requests[0], 1280)
+
+    def test_old_protocol_can_return_images_without_unsupported_resolution_calls(self):
+        for asynchronous in (False, True):
+            with self.subTest(asynchronous=asynchronous):
+                session = ImageSession()
+                session.supports_resolution_control = False
+                session.supports_async_input = asynchronous
+                session.set_resolution = Mock(side_effect=AssertionError("Unsupported setting"))
+                worker = self.worker(lambda: session)
+                worker.set_resolution(1280)
+                worker.start()
+                _, picture = worker.frames.get(timeout=2)
+                picture.close()
+                worker.cancel()
+                worker.join(1)
+                session.set_resolution.assert_not_called()
+                self.assertIsNone(worker.terminal_error)
+
+    def test_resolution_capability_updates_controls_without_overwriting_connection_status(self):
+        worker = self.worker(Session)
+        window = fake_view(worker)
+        for supported, state, hint in ((False, "disabled", "需升级共享端才能选择画质"),
+                                        (True, "readonly", "")):
+            window.status.reset_mock()
+            worker.states.put(("capabilities", supported))
+            window._poll_updates()
+            window._resolution_combo.configure.assert_called_with(state=state)
+            window._resolution_hint.set.assert_called_with(hint)
+            window.status.set.assert_not_called()
+        window._resolution_choice.get.return_value = "省流量 · 1280"
+        window._resolution_changed()
+        self.assertEqual(worker.resolution, 1280)
+        for invalid in (True, 640, 1920.0):
+            with self.assertRaises(ValueError):
+                worker.set_resolution(invalid)
+        self.assertEqual(worker.resolution, 1280)
+
+    def test_cancel_closes_decoded_image_returned_after_cancellation(self):
+        session = ImageSession()
+        picture = Image.new("RGB", (24, 16))
+        worker = self.worker(lambda: session)
+
+        def receive(events):
+            worker.cancel()
+            return picture
+
+        session.exchange_image = receive
+        worker.start()
+        worker.join(1)
+        self.assertFalse(worker.is_alive())
+        with self.assertRaises(ValueError):
+            picture.getpixel((0, 0))
+
+    def test_ui_closes_replaced_and_final_decoded_images(self):
+        worker = self.worker(Session)
+        window = fake_view(worker)
+        previous, current = Image.new("RGB", (24, 16)), Image.new("RGB", (24, 16))
+        window._frame = window._rendered_frame = previous
+        window._render = lambda: setattr(window, "_rendered_frame", window._frame)
+        worker.inputs.begin(1)
+        worker.frames.put((1, current))
+        window._poll_updates()
+        with self.assertRaises(ValueError):
+            previous.getpixel((0, 0))
+        self.assertEqual(current.getpixel((0, 0)), (0, 0, 0))
+        window.close()
+        with self.assertRaises(ValueError):
+            current.getpixel((0, 0))
 
 
 if __name__ == "__main__":

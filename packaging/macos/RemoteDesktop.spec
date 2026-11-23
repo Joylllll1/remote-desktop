@@ -18,7 +18,7 @@ for name in ('mss', 'Pillow', 'pynput', 'six', 'pyobjc-core', 'pyobjc-framework-
 analysis = Analysis(
     [str(root / 'remote_desktop.py')], pathex=[str(root)], datas=notices,
     hiddenimports=['pynput.keyboard._darwin', 'pynput.mouse._darwin', 'mss.darwin',
-                   'PIL.JpegImagePlugin', 'PIL._imagingtk'],
+                   'PIL.JpegImagePlugin', 'PIL.PngImagePlugin', 'PIL._imagingtk'],
 )
 archive = PYZ(analysis.pure)
 executable = EXE(archive, analysis.scripts, [], name='RemoteDesktop',
@@ -32,7 +32,7 @@ app = BUNDLE(
         'LSApplicationCategoryType': 'public.app-category.utilities',
         'NSHighResolutionCapable': True,
         'NSScreenCaptureUsageDescription': '共享时采集本机屏幕，发送给已授权的 Tailscale 设备。',
-        'CFBundleShortVersionString': '0.1.4',
-        'CFBundleVersion': '5',
+        'CFBundleShortVersionString': '0.1.5',
+        'CFBundleVersion': '6',
     },
 )

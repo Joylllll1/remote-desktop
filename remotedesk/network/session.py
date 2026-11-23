@@ -84,6 +84,7 @@ class Session:
         self._close_lock = threading.Lock()
         self._stream = None
         self.supports_async_input = False
+        self.supports_resolution_control = False
         try:
             try:
                 greeting = receive(sock, 128)
@@ -91,12 +92,13 @@ class Session:
                 raise TimeoutError("已接通共享端口，等待设备授权响应超时。") from error
             if greeting == DENIED:
                 raise ValueError("这台电脑未获授权。请在对方的「共享本机」中选中这台电脑，再开始共享。")
-            from remotedesk.network.stream import BUSY, READY as STREAM_READY, StreamClient
+            from remotedesk.network.stream import BUSY, READY as STREAM_READY, READY_V2, StreamClient
             if greeting == BUSY:
                 raise ConnectionError("共享端正在结束上一次会话，请稍候重试。")
-            if greeting == STREAM_READY:
-                self._stream = StreamClient(sock)
+            if greeting in (STREAM_READY, READY_V2):
+                self._stream = StreamClient(sock, version=3 if greeting == STREAM_READY else 2)
                 self.supports_async_input = True
+                self.supports_resolution_control = greeting == STREAM_READY
             elif greeting != READY:
                 raise ValueError("对端运行了其他服务或协议版本不兼容。")
         except BaseException:
@@ -120,6 +122,21 @@ class Session:
         if self._stream is None:
             raise RuntimeError("请升级共享端以使用独立控制通道。")
         self._stream.send_input(events)
+
+    def set_resolution(self, width):
+        if not self.supports_resolution_control:
+            raise RuntimeError("请升级共享端以选择画质。")
+        self._stream.set_resolution(width)
+
+    def exchange_image(self, events):
+        if self._stream is not None:
+            return self._stream.exchange_image(events)
+        from remotedesk.network.tiles import TileDecoder
+        decoder = TileDecoder()
+        try:
+            return decoder.decode(b"J" + self.exchange(events))
+        finally:
+            decoder.close()
 
     def close(self):
         with self._close_lock:

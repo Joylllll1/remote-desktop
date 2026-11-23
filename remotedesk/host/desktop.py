@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import logging
+import math
 import os
 import sys
 import time
@@ -27,6 +28,8 @@ class Desktop:
     MAX_HELD_KEYS = 64
     JPEG_QUALITY = 70
     MAX_WIDTH = 1920
+    MAX_CAPTURE_SIDE = 3840
+    MAX_CAPTURE_PIXELS = 8_294_400
     # Start with a small first frame. The next request arrives only after the
     # viewer has received and decoded the previous one (including on v1 clients).
     _FRAME_PROFILES = ((800, 42), (1280, 55), (1920, 70))
@@ -209,22 +212,33 @@ class Desktop:
     def has_held_input(self):
         return bool(self._held_keys or self._held_buttons)
 
+    def capture_image(self, max_width=1920):
+        """Return an owned RGB image; explicit sizing never changes input coordinates."""
+        self._require_open()
+        if type(max_width) is not int or not 1 <= max_width <= self.MAX_CAPTURE_SIDE:
+            raise ValueError("Capture width must be an integer from 1 to 3840")
+        image = None
+        try:
+            shot = self._capture.grab(self._monitor)
+            image = self._image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+            width, height = image.size
+            scale = min(1, max_width / width, self.MAX_CAPTURE_SIDE / height,
+                        math.sqrt(self.MAX_CAPTURE_PIXELS / (width * height)))
+            if scale < 1:
+                image.thumbnail((max(1, int(width * scale)), max(1, int(height * scale))),
+                                self._image.Resampling.BILINEAR)
+            return image
+        except Exception as error:
+            if image is not None:
+                image.close()
+            raise RuntimeError("无法截取桌面。" + self._platform_hint()) from error
+
     def frame(self) -> bytes:
-        """Return a JPEG of the selected display, optionally reduced in width."""
+        """Legacy JPEG with its existing adaptive width and quality profiles."""
         self._require_open()
         max_width, quality = self._frame_profile()
         try:
-            shot = self._capture.grab(self._monitor)
-            # shot.size is in captured pixels; the monitor may instead be in
-            # logical points on a Retina display. Do not use it for input.
-            with self._image.frombytes(
-                "RGB", shot.size, shot.bgra, "raw", "BGRX"
-            ) as image:
-                if image.width > max_width:
-                    height = max(1, round(image.height * max_width / image.width))
-                    image.thumbnail(
-                        (max_width, height), self._image.Resampling.BILINEAR
-                    )
+            with self.capture_image(max_width=max_width) as image:
                 output = io.BytesIO()
                 image.save(output, format="JPEG", quality=quality)
                 return output.getvalue()

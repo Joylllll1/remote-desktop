@@ -41,6 +41,7 @@ _SYMBOL_KEYS.update({
 _SHORTCUT_MODIFIERS = {"ctrl_l", "ctrl_r", "cmd", "cmd_l", "cmd_r", "alt_l", "alt_r"}
 _MODIFIER_KEYS = _SHORTCUT_MODIFIERS | {"shift_l", "shift_r", "alt_gr"}
 _RETRY_DELAYS = (1, 2, 5, 10, 20)
+_RESOLUTIONS = {"清晰 · 1920": 1920, "省流量 · 1280": 1280}
 
 
 def _lifecycle(message):
@@ -154,7 +155,22 @@ class _RecoveryWorker(threading.Thread):
         self._created_at = time.monotonic()
         self._displayed_frames = self._total_displayed = 0
         self._shown_started = self._last_checkpoint = self._created_at
+        self._resolution = 1920
         self.inputs.disable()
+
+    @property
+    def resolution(self):
+        with self._lock:
+            return self._resolution
+
+    def set_resolution(self, width):
+        if type(width) is not int or width not in (1280, 1920):
+            raise ValueError("画质宽度只能选择 1280 或 1920。")
+        with self._lock:
+            self._resolution = width
+
+    def _apply_resolution(self, session):
+        session.set_resolution(self.resolution)
 
     @property
     def terminal_error(self):
@@ -164,6 +180,7 @@ class _RecoveryWorker(threading.Thread):
     def cancel(self):
         self._cancelled.set()
         self.inputs.disable()
+        self._discard_frames()
         with self._lock:
             session = self._session
             sender_stop = self._sender_stop
@@ -263,6 +280,24 @@ class _RecoveryWorker(threading.Thread):
             return
         raise error
 
+    def _receive_frame(self, session, events):
+        exchange_image = getattr(session, "exchange_image", None)
+        if callable(exchange_image):
+            frame = exchange_image(events)
+            if (not isinstance(frame, self.Image.Image) or frame.mode != "RGB"
+                    or frame.width < 1 or frame.height < 1):
+                if hasattr(frame, "close"):
+                    frame.close()
+                raise ValueError("远程桌面返回的图像无效。")
+            return frame
+        jpeg = session.exchange(events)
+        try:
+            with self.Image.open(io.BytesIO(jpeg), formats=("JPEG",)) as source:
+                source.load()
+                return source.convert("RGB")
+        except Exception as error:
+            raise ValueError("远程桌面画面无效：" + str(error)) from error
+
     def run(self):
         epoch = 0
         while not self._cancelled.is_set():
@@ -283,6 +318,10 @@ class _RecoveryWorker(threading.Thread):
                         self._session = session
                 if self._cancelled.is_set():
                     break
+                resolution_control = bool(getattr(session, "supports_resolution_control", False))
+                if resolution_control:
+                    self._apply_resolution(session)
+                self.states.put(("capabilities", resolution_control))
                 asynchronous = bool(getattr(session, "supports_async_input", False))
                 if asynchronous:
                     sender = threading.Thread(target=self._send_inputs,
@@ -299,21 +338,20 @@ class _RecoveryWorker(threading.Thread):
                 while not self._cancelled.is_set():
                     started = time.monotonic()
                     self._raise_sender_error(sender_errors)
-                    jpeg = session.exchange([] if asynchronous else self.inputs.take(epoch))
-                    self._raise_sender_error(sender_errors)
-                    if self._cancelled.is_set():
-                        break
+                    if resolution_control:
+                        self._apply_resolution(session)
+                    frame = None
                     try:
-                        with self.Image.open(io.BytesIO(jpeg), formats=("JPEG",)) as source:
-                            source.load()
-                            frame = source.convert("RGB")
-                    except Exception as error:
-                        raise ValueError("远程桌面画面无效：" + str(error)) from error
-                    if self._cancelled.is_set():
-                        frame.close()
-                        break
-                    self._discard_frames()
-                    self.frames.put_nowait((epoch, frame))
+                        frame = self._receive_frame(session, [] if asynchronous else self.inputs.take(epoch))
+                        self._raise_sender_error(sender_errors)
+                        if self._cancelled.is_set():
+                            break
+                        self._discard_frames()
+                        self.frames.put_nowait((epoch, frame))
+                        frame = None  # The queue/UI now owns the independent image.
+                    finally:
+                        if frame is not None:
+                            frame.close()
                     self._cancelled.wait(max(0, 0.1 - (time.monotonic() - started)))
             except Exception as error:
                 caught = error
@@ -372,13 +410,28 @@ class _Viewer:
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         bar = tk.Frame(self.root, bg="#f7faf9", padx=14, pady=7)
         bar.pack(side="bottom", fill="x")
+        quality_bar = tk.Frame(bar, bg="#f7faf9")
+        quality_bar.pack(fill="x", pady=(0, 5))
+        tk.Label(quality_bar, text="画质", bg="#f7faf9", fg="#253f39").pack(side="left")
+        self._resolution_choice = tk.StringVar(value="清晰 · 1920")
+        self._resolution_combo = ttk.Combobox(quality_bar, textvariable=self._resolution_choice,
+            values=tuple(_RESOLUTIONS), state="disabled", width=13)
+        self._resolution_combo.pack(side="left", padx=(6, 10))
+        self._resolution_combo.bind("<<ComboboxSelected>>", self._resolution_changed)
+        self._resolution_hint = tk.StringVar(value="连接后可选择画质")
+        hint = tk.Label(quality_bar, textvariable=self._resolution_hint, anchor="w", justify="left",
+                        bg="#f7faf9", fg="#536d65")
+        hint.pack(side="left", fill="x", expand=True)
+        hint.bind("<Configure>", lambda event: hint.configure(wraplength=max(1, event.width - 4)))
+        status_bar = tk.Frame(bar, bg="#f7faf9")
+        status_bar.pack(fill="x")
         self.status = tk.StringVar(value="正在连接…")
-        self._disconnect = ttk.Button(bar, text="断开连接", command=self.close)
+        self._disconnect = ttk.Button(status_bar, text="断开连接", command=self.close)
         self._disconnect.pack(side="right", padx=(12, 0))
-        self._indicator = tk.Canvas(bar, width=10, height=10, bg="#f7faf9", highlightthickness=0)
+        self._indicator = tk.Canvas(status_bar, width=10, height=10, bg="#f7faf9", highlightthickness=0)
         self._indicator.pack(side="left", padx=(0, 8))
         self._dot = self._indicator.create_oval(1, 1, 9, 9, fill="#84918d", outline="")
-        status_label = tk.Label(bar, textvariable=self.status, anchor="w", justify="left",
+        status_label = tk.Label(status_bar, textvariable=self.status, anchor="w", justify="left",
                                 bg="#f7faf9", fg="#253f39")
         status_label.pack(side="left", fill="x", expand=True)
         status_label.bind("<Configure>", lambda event: status_label.configure(wraplength=max(1, event.width - 4)))
@@ -446,6 +499,16 @@ class _Viewer:
         if self._worker.terminal_error is not None:
             raise self._worker.terminal_error
 
+    def _resolution_changed(self, event=None):
+        label = self._resolution_choice.get()
+        self._worker.set_resolution(_RESOLUTIONS[label])
+        _lifecycle("画质选择：%s，下一帧请求生效。" % label)
+
+    def _set_resolution_capability(self, supported):
+        self._resolution_combo.configure(state="readonly" if supported else "disabled")
+        self._resolution_hint.set("" if supported else (
+            "需升级共享端才能选择画质" if supported is False else "连接后可选择画质"))
+
     def _poll(self):
         self._poll_job = None
         if self._closed:
@@ -505,6 +568,7 @@ class _Viewer:
 
     def _show_terminal(self, error):
         self._ended = True
+        self._set_resolution_capability(None)
         self._pause_input("连接已终止\n请查看下方提示。")
         self._indicator.itemconfigure(self._dot, fill="#a54a32")
         self._disconnect.configure(text="关闭窗口")
@@ -519,6 +583,11 @@ class _Viewer:
             if state == "terminal":
                 self._show_terminal(detail)
                 return
+            if state == "capabilities":
+                self._set_resolution_capability(detail)
+                continue
+            if state in ("connecting", "retry"):
+                self._set_resolution_capability(None)
             self._indicator.itemconfigure(self._dot, fill="#84918d")
             if state == "connecting":
                 text = "正在连接远程桌面…" if detail == 1 else "正在重新连接…"
@@ -534,8 +603,13 @@ class _Viewer:
             epoch, frame = self._frames.get_nowait()
         except queue.Empty:
             return
+        previous = self._frame
         self._frame = frame
-        self._render()
+        try:
+            self._render()
+        finally:
+            if previous is not None and previous is not frame:
+                previous.close()
         was_stale = self._stale
         self._last_rendered_at = time.monotonic()
         self._stale = False
@@ -575,8 +649,8 @@ class _Viewer:
         size = (max(1, int(self._frame.width * scale)), max(1, int(self._frame.height * scale)))
         if self._rendered_frame is not self._frame or self._rendered_size != size:
             resampling = getattr(self.Image, "Resampling", self.Image).BILINEAR
-            image = self._frame.resize(size, resampling)
-            self._photo = self.ImageTk.PhotoImage(image, master=self.root)
+            with self._frame.resize(size, resampling) as image:
+                self._photo = self.ImageTk.PhotoImage(image, master=self.root)
             self.canvas.itemconfigure(self._image_item, image=self._photo, state="normal")
             self._rendered_frame, self._rendered_size = self._frame, size
         left, top = (width - size[0]) // 2, (height - size[1]) // 2
@@ -734,6 +808,11 @@ class _Viewer:
             self.root.destroy()
         except Exception:
             pass
+        if self._frame is not None:
+            self._frame.close()
+        if self._rendered_frame is not None and self._rendered_frame is not self._frame:
+            self._rendered_frame.close()
+        self._frame = self._rendered_frame = None
         if self._worker.terminal_error is None:
             _lifecycle(self._worker.close_summary())
 

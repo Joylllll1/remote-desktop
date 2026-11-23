@@ -54,6 +54,10 @@ class PanelHostTest(unittest.TestCase):
             def frame(self):
                 return frame.getvalue()
 
+            def capture_image(self, *, max_width=1920):
+                with Image.open(io.BytesIO(frame.getvalue())) as image:
+                    return image.convert("RGB")
+
             def apply(self, batch):
                 events.extend(batch)
 
