@@ -333,7 +333,7 @@ class TileStreamTests(unittest.TestCase):
         # A patch recorded on the old connection must not become a valid base
         # on a fresh Session, even when the stream dimensions happen to match.
         raw_client, raw_server = self.pair()
-        session.send(raw_server, stream.READY, 128)
+        session.send(raw_server, stream.READY_V3, 128)
         fresh = session.Session(raw_client)
         session.send(raw_server, patch_payload, session.MAX_FRAME + 1)
         with self.assertRaises(ValueError):

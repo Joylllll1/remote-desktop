@@ -1,0 +1,76 @@
+{
+  "scope": "Loopback synthetic 1920x1080 desktop, small changing regions; not real Windows or Tailscale acceptance",
+  "comparison": [
+    {
+      "protocol": 3,
+      "rtt_ms": 300,
+      "downstream_kib_s": 256,
+      "stall_seconds": 0,
+      "resolution": [
+        1920,
+        1080
+      ],
+      "decoded_frames": 39,
+      "first_frame_s": 1.4706,
+      "measured_after_first_s": 12.0599,
+      "decoded_fps": 3.151,
+      "frame_age_p95_s": 0.171,
+      "frame_age_last_s": 0.1626,
+      "max_frame_gap_s": 0.3252,
+      "input_events_received": 65,
+      "input_delay_p95_s": 0.1555,
+      "input_delay_max_s": 0.1556,
+      "downstream_bytes": 236634,
+      "errors": [],
+      "leaked_threads": []
+    },
+    {
+      "protocol": 4,
+      "rtt_ms": 300,
+      "downstream_kib_s": 256,
+      "stall_seconds": 0,
+      "resolution": [
+        1920,
+        1080
+      ],
+      "decoded_frames": 115,
+      "first_frame_s": 1.4715,
+      "measured_after_first_s": 12.0339,
+      "decoded_fps": 9.473,
+      "frame_age_p95_s": 0.1682,
+      "frame_age_last_s": 0.167,
+      "max_frame_gap_s": 0.2114,
+      "input_events_received": 65,
+      "input_delay_p95_s": 0.1555,
+      "input_delay_max_s": 0.1577,
+      "downstream_bytes": 275153,
+      "errors": [],
+      "leaked_threads": []
+    }
+  ],
+  "low_bandwidth_and_stall": [
+    {
+      "protocol": 4,
+      "rtt_ms": 300,
+      "downstream_kib_s": 16.0,
+      "stall_seconds": 3.0,
+      "resolution": [
+        1920,
+        1080
+      ],
+      "decoded_frames": 104,
+      "first_frame_s": 13.6644,
+      "measured_after_first_s": 15.0988,
+      "decoded_fps": 6.822,
+      "frame_age_p95_s": 3.0241,
+      "frame_age_last_s": 0.1895,
+      "max_frame_gap_s": 3.0692,
+      "input_events_received": 140,
+      "input_delay_p95_s": 0.1556,
+      "input_delay_max_s": 0.1562,
+      "downstream_bytes": 272753,
+      "errors": [],
+      "leaked_threads": []
+    }
+  ]
+}

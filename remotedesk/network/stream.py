@@ -1,8 +1,9 @@
 """Full-duplex input with versioned JPEG or regional image updates.
 
-Only one requested image can be in flight. Socket mode stays nonblocking so
-one direction cannot change the other direction's timeout. Capture stays in
-its owning thread; the control reader owns input injection and its lease.
+V4 continuously sends fresh, paced images within a decode-acknowledged window.
+Older peers retain request/reply framing. Socket mode stays nonblocking so one
+direction cannot change the other's timeout. Capture stays in its owning
+thread; the independent control reader owns input injection and its lease.
 """
 
 import json
@@ -11,17 +12,25 @@ import socket
 import struct
 import threading
 import time
+from collections import deque
 from contextlib import suppress
 
 from remotedesk.network.session import MAX_FRAME, MAX_INPUT, check_events
 
 READY_V2 = b"remote-desktop/2 ready"
-READY = b"remote-desktop/3 ready"
+READY_V3 = b"remote-desktop/3 ready"
+READY = b"remote-desktop/4 ready"
 BUSY = b"remote-desktop/2 busy"
 INPUT_LEASE = 3.0
 CONTROL_IDLE = 45.0
 TRANSFER_IDLE = 25.0
 TRANSFER_TOTAL = 60.0
+# The byte window includes the packet length and frame envelope. A frame larger
+# than this budget is allowed only as the sole outstanding frame (<= MAX_FRAME).
+MAX_IN_FLIGHT_FRAMES = 3
+MAX_IN_FLIGHT_BYTES = 512 * 1024
+FRAME_INTERVAL = 0.1
+FRAME_HEADER = struct.Struct("!QH")  # sequence, requested resolution profile
 
 
 def _wait(sock, writing, timeout):
@@ -32,10 +41,12 @@ def _wait(sock, writing, timeout):
         raise ConnectionError("连接已关闭。") from error
 
 
-def _read(sock, size, *, deadline, idle, tick=None, label="数据"):
+def _read(sock, size, *, deadline, idle, tick=None, label="数据", cancelled=None):
     data = bytearray()
     last_progress = time.monotonic()
     while len(data) < size:
+        if cancelled is not None and cancelled.is_set():
+            raise EOFError("连接已关闭。")
         now = time.monotonic()
         if tick is not None:
             tick(now)
@@ -55,22 +66,24 @@ def _read(sock, size, *, deadline, idle, tick=None, label="数据"):
     return bytes(data)
 
 
-def read_packet(sock, limit, *, idle=TRANSFER_IDLE, total=TRANSFER_TOTAL, tick=None, label="数据"):
+def read_packet(sock, limit, *, idle=TRANSFER_IDLE, total=TRANSFER_TOTAL, tick=None, label="数据", cancelled=None):
     deadline = time.monotonic() + total
-    header = _read(sock, 4, deadline=deadline, idle=idle, tick=tick, label=label + "长度")
+    header = _read(sock, 4, deadline=deadline, idle=idle, tick=tick, label=label + "长度", cancelled=cancelled)
     size, = struct.unpack("!I", header)
     if not 0 < size <= limit:
         raise ValueError("远程桌面数据包长度无效。")
-    return _read(sock, size, deadline=deadline, idle=idle, tick=tick, label=label)
+    return _read(sock, size, deadline=deadline, idle=idle, tick=tick, label=label, cancelled=cancelled)
 
 
-def write_packet(sock, payload, limit, *, idle=TRANSFER_IDLE, total=TRANSFER_TOTAL):
+def write_packet(sock, payload, limit, *, idle=TRANSFER_IDLE, total=TRANSFER_TOTAL, cancelled=None):
     if not 0 < len(payload) <= limit:
         raise ValueError("远程桌面数据包长度无效。")
     data = memoryview(struct.pack("!I", len(payload)) + payload)
     started = last_progress = time.monotonic()
     sent = 0
     while sent < len(data):
+        if cancelled is not None and cancelled.is_set():
+            raise EOFError("连接已关闭。")
         now = time.monotonic()
         remaining = min(total - (now - started), idle - (now - last_progress))
         if remaining <= 0:
@@ -101,28 +114,45 @@ def _configure(sock):
 class StreamClient:
     """One receiver and a serialized, independent control writer."""
 
-    def __init__(self, sock, *, version=3):
+    def __init__(self, sock, *, version=4):
         self.sock = sock
         self.version = version
         _configure(self.sock)
         self._writer = threading.Lock()
+        self._receiver = threading.Lock()
+        self._closed = threading.Event()
         self._previous = None
         self._decoder = None
         self._width = 1920
+        self._started = False
+        self._received_sequence = 0
 
     def set_resolution(self, width):
         if type(width) is not int or width not in (1280, 1920):
             raise ValueError("画面宽度须为 1280 或 1920。")
-        self._width = width
-
-    def _command(self, events, frame):
-        check_events(events)
-        command = {"events": events, "frame": frame}
-        if self.version >= 3 and frame:
-            command["width"] = self._width
-        payload = json.dumps(command).encode("utf-8")
         with self._writer:
-            write_packet(self.sock, payload, MAX_INPUT, idle=12, total=12)
+            changed = self._width != width
+            self._width = width
+            if self.version >= 4 and self._started and changed:
+                self._write_command({"events": [], "frame": False, "width": width})
+
+    def _write_command(self, command):
+        if self._closed.is_set():
+            raise ConnectionError("连接已关闭。")
+        payload = json.dumps(command).encode("utf-8")
+        write_packet(self.sock, payload, MAX_INPUT, idle=12, total=12, cancelled=self._closed)
+
+    def _command(self, events, frame, *, ack=None):
+        check_events(events)
+        with self._writer:
+            command = {"events": events, "frame": frame}
+            if self.version >= 3 and frame:
+                command["width"] = self._width
+            if ack is not None:
+                command["ack"] = ack
+            self._write_command(command)
+            if self.version >= 4 and frame:
+                self._started = True
 
     def send_input(self, events):
         self._command(events, False)
@@ -135,7 +165,7 @@ class StreamClient:
                 image.save(output, format="JPEG", quality=75, subsampling=0)
                 return output.getvalue()
         self._command(events, True)
-        payload = read_packet(self.sock, MAX_FRAME + 1, label="桌面画面")
+        payload = read_packet(self.sock, MAX_FRAME + 1, label="桌面画面", cancelled=self._closed)
         if payload == b"U":
             if self._previous is None:
                 raise ValueError("共享端尚未提供完整画面。")
@@ -147,21 +177,65 @@ class StreamClient:
 
     def exchange_image(self, events):
         from remotedesk.network.tiles import TileDecoder
-        if self._decoder is None:
-            self._decoder = TileDecoder()
-        if self.version < 3:
-            return self._decoder.decode(b"J" + self.exchange(events))
-        self._command(events, True)
-        payload = read_packet(self.sock, MAX_FRAME + 1, label="桌面画面")
-        return self._decoder.decode(payload)
+        check_events(events)
+        with self._receiver:
+            if self._closed.is_set():
+                raise ConnectionError("连接已关闭。")
+            if self._decoder is None:
+                self._decoder = TileDecoder()
+            if self.version < 3:
+                return self._decoder.decode(b"J" + self.exchange(events))
+            if self.version < 4:
+                self._command(events, True)
+                payload = read_packet(self.sock, MAX_FRAME + 1, label="桌面画面", cancelled=self._closed)
+                return self._decoder.decode(payload)
+            try:
+                if not self._started:
+                    self._command(events, True)
+                elif events:
+                    self.send_input(events)
+                while True:
+                    payload = read_packet(self.sock, MAX_FRAME + 1 + FRAME_HEADER.size,
+                                          label="桌面画面", cancelled=self._closed)
+                    if len(payload) <= FRAME_HEADER.size:
+                        raise ValueError("共享端返回了无效的画面封装。")
+                    sequence, width = FRAME_HEADER.unpack_from(payload)
+                    if sequence != self._received_sequence + 1 or width not in (1280, 1920):
+                        raise ValueError("共享端返回了无效的画面序号或宽度。")
+                    image = self._decoder.decode(payload[FRAME_HEADER.size:])
+                    try:
+                        # Decode every delta in order, including buffered images
+                        # from the old profile. Only validated images free credit.
+                        self._command([], False, ack=sequence)
+                        self._received_sequence = sequence
+                    except BaseException:
+                        image.close()
+                        raise
+                    if width == self._width:
+                        return image
+                    image.close()
+            except BaseException:
+                _shutdown(self.sock)
+                raise
+
+    def close(self):
+        self._closed.set()
+        _shutdown(self.sock)
+        # Shutdown interrupts a reader or ACK writer before waiting for its
+        # decoder, so cross-thread cancellation cannot strand this lock.
+        with self._receiver:
+            if self._decoder is not None:
+                self._decoder.close()
+                self._decoder = None
 
 
-def serve_stream(conn, desktop, *, version=3):
+def serve_stream(conn, desktop, *, version=4):
     """Serve one authorized client. The caller owns Desktop's lifetime."""
     if version >= 3 and not callable(getattr(desktop, "capture_image", None)):
         raise RuntimeError("共享端缺少新版屏幕采集组件，请重新安装完整版本。")
     _configure(conn)
-    write_packet(conn, READY if version >= 3 else READY_V2, 128, idle=12, total=12)
+    greeting = READY if version >= 4 else READY_V3 if version >= 3 else READY_V2
+    write_packet(conn, greeting, 128, idle=12, total=12)
     if version < 3 and hasattr(desktop, "reset_stream"):
         desktop.reset_stream(minimum_width=1280)
     stopped = threading.Event()
@@ -169,7 +243,12 @@ def serve_stream(conn, desktop, *, version=3):
     failures = []
     last_command = time.monotonic()
     requested_width = 1920
-    request_lock = threading.Lock()
+    request_lock = threading.Condition()
+    streaming = False
+    outstanding = deque()
+    outstanding_bytes = 0
+    last_sequence = last_ack = 0
+    drain_window = False
 
     def release_if_expired(now):
         if now - last_command >= INPUT_LEASE and desktop.has_held_input:
@@ -177,25 +256,38 @@ def serve_stream(conn, desktop, *, version=3):
             print("控制心跳延迟，已释放按键和鼠标；继续等待连接恢复。", flush=True)
 
     def controls():
-        nonlocal last_command, requested_width
+        nonlocal last_command, requested_width, streaming, outstanding_bytes, last_ack
         try:
             while not stopped.is_set():
                 raw = read_packet(conn, MAX_INPUT, idle=CONTROL_IDLE, total=CONTROL_IDLE,
-                                  tick=release_if_expired, label="控制指令")
+                                  tick=release_if_expired, label="控制指令", cancelled=stopped)
                 command = json.loads(raw)
-                if (type(command) is not dict
-                        or set(command) not in ({"events", "frame"}, {"events", "frame", "width"})
-                        or type(command["frame"]) is not bool):
+                allowed = {"events", "frame", "width", "ack"} if version >= 4 else {"events", "frame", "width"}
+                if (type(command) is not dict or not {"events", "frame"} <= set(command)
+                        or not set(command) <= allowed or type(command["frame"]) is not bool):
                     raise ValueError("控制指令格式无效。")
                 width = command.get("width", 1920)
                 if (type(width) is not int or width not in (1280, 1920)
-                        or ("width" in command and (version < 3 or not command["frame"]))):
+                        or ("width" in command and (version < 3 or (version < 4 and not command["frame"])))):
                     raise ValueError("画面宽度指令无效。")
                 check_events(command["events"])
+                if "ack" in command:
+                    with request_lock:
+                        if type(command["ack"]) is not int or not last_ack < command["ack"] <= last_sequence:
+                            raise ValueError("画面确认序号无效。")
                 desktop.apply(command["events"])
                 last_command = time.monotonic()
-                if command["frame"]:
-                    with request_lock:
+                with request_lock:
+                    if "ack" in command:
+                        last_ack = command["ack"]
+                        while outstanding and outstanding[0][0] <= last_ack:
+                            outstanding_bytes -= outstanding.popleft()[1]
+                    if version >= 4:
+                        if "width" in command:
+                            requested_width = width
+                        streaming = streaming or command["frame"]
+                        request_lock.notify_all()
+                    elif command["frame"]:
                         requested_width = width
                         requested.set()
         except EOFError:
@@ -205,6 +297,8 @@ def serve_stream(conn, desktop, *, version=3):
                 failures.append(error)
         finally:
             stopped.set()
+            with request_lock:
+                request_lock.notify_all()
             _shutdown(conn)
             desktop.apply([{"type": "release"}])
 
@@ -216,17 +310,40 @@ def serve_stream(conn, desktop, *, version=3):
     reader.start()
     previous = None
     phase = "等待画面请求"
+    next_capture = 0.0
     try:
         while not stopped.is_set():
-            if not requested.wait(0.2):
-                continue
-            with request_lock:
-                requested.clear()
-                width = requested_width
+            if version >= 4:
+                with request_lock:
+                    while not stopped.is_set():
+                        available = (streaming and len(outstanding) < MAX_IN_FLIGHT_FRAMES
+                                     and outstanding_bytes < MAX_IN_FLIGHT_BYTES
+                                     and (not drain_window or not outstanding))
+                        delay = next_capture - time.monotonic()
+                        if available and delay <= 0:
+                            break
+                        request_lock.wait(min(0.2, delay) if available and delay > 0 else 0.2)
+                if stopped.is_set():
+                    break
+                # Do not capture ahead while the previous write is stalled or
+                # the socket has no send space. Input has its own reader.
+                while not stopped.is_set() and not _wait(conn, True, 0.2):
+                    pass
+                with request_lock:
+                    width = requested_width
+                    if not outstanding:
+                        drain_window = False
+            else:
+                if not requested.wait(0.2):
+                    continue
+                with request_lock:
+                    requested.clear()
+                    width = requested_width
             if stopped.is_set():
                 break
             phase = "采集桌面"
             started = time.monotonic()
+            next_capture = started + FRAME_INTERVAL
             if encoder is not None:
                 with desktop.capture_image(max_width=width) as frame:
                     payload = encoder.encode(frame)
@@ -234,8 +351,30 @@ def serve_stream(conn, desktop, *, version=3):
                 frame = desktop.frame()
                 payload = b"U" if frame == previous else b"J" + frame
             captured = time.monotonic()
+            if version >= 4:
+                wire_size = 4 + FRAME_HEADER.size + len(payload)
+                with request_lock:
+                    if outstanding and outstanding_bytes + wire_size > MAX_IN_FLIGHT_BYTES:
+                        drain_window = True
+                        sequence = None
+                    else:
+                        # Reserve before writing: the peer may decode and ACK
+                        # the last bytes before write_packet returns here.
+                        last_sequence += 1
+                        sequence = last_sequence
+                        outstanding.append((sequence, wire_size))
+                        outstanding_bytes += wire_size
+                if sequence is None:
+                    # Encoded length is unknowable before capture. Never keep
+                    # an unsent old image while waiting for byte credit, and
+                    # reset its unsent delta base before the next fresh capture.
+                    del payload
+                    encoder.close()
+                    continue
+                payload = FRAME_HEADER.pack(sequence, width) + payload
             phase = "发送桌面画面"
-            write_packet(conn, payload, MAX_FRAME + 1)
+            write_packet(conn, payload, MAX_FRAME + 1 + (FRAME_HEADER.size if version >= 4 else 0),
+                         cancelled=stopped)
             finished = time.monotonic()
             if version < 3 and hasattr(desktop, "frame_transmitted"):
                 desktop.frame_transmitted(payload != b"U")
@@ -244,6 +383,7 @@ def serve_stream(conn, desktop, *, version=3):
                       (captured - started, finished - captured, len(payload)), flush=True)
             if encoder is None:
                 previous = frame
+            del payload
             phase = "等待画面请求"
     except (OSError, EOFError) as error:
         if not stopped.is_set():
@@ -252,6 +392,8 @@ def serve_stream(conn, desktop, *, version=3):
         raise RuntimeError(f"{phase}失败：{error}") from error
     finally:
         stopped.set()
+        with request_lock:
+            request_lock.notify_all()
         _shutdown(conn)
         # Never let a replacement desktop overlap a reader still applying input.
         reader.join()

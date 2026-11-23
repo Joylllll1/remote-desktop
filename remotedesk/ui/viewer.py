@@ -322,6 +322,10 @@ class _RecoveryWorker(threading.Thread):
                 if resolution_control:
                     self._apply_resolution(session)
                 self.states.put(("capabilities", resolution_control))
+                if getattr(session, "supports_continuous_frames", False):
+                    _lifecycle("已启用连续画面传输（协议 v4），限制在途画面以避免积压。")
+                else:
+                    _lifecycle("共享端使用逐帧请求传输；高延迟下刷新率受网络往返限制。")
                 asynchronous = bool(getattr(session, "supports_async_input", False))
                 if asynchronous:
                     sender = threading.Thread(target=self._send_inputs,
