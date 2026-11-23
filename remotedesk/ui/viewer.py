@@ -42,6 +42,10 @@ _SHORTCUT_MODIFIERS = {"ctrl_l", "ctrl_r", "cmd", "cmd_l", "cmd_r", "alt_l", "al
 _MODIFIER_KEYS = _SHORTCUT_MODIFIERS | {"shift_l", "shift_r", "alt_gr"}
 _RETRY_DELAYS = (1, 2, 5, 10, 20)
 _RESOLUTIONS = {"清晰 · 1920": 1920, "省流量 · 1280": 1280}
+# Tk 9 touchpad deltas are pixel-like movement, whereas the wire protocol and
+# pynput use wheel steps. Accumulate small movements rather than dropping them
+# or sending one whole wheel step per pixel.
+_TOUCHPAD_PIXELS_PER_STEP = 40
 
 
 def _lifecycle(message):
@@ -460,6 +464,7 @@ class _Viewer:
         self._buttons_down = set()
         self._key_release_jobs = {}
         self._wheel_remainders = {"x": 0, "y": 0}
+        self._touchpad_remainders = {"x": 0, "y": 0}
         self._poll_job = None
         self._resize_job = None
         self._focus_job = None
@@ -477,6 +482,12 @@ class _Viewer:
             self.canvas.bind("<ButtonRelease-%d>" % number,
                              lambda event, name=button: self._mouse_button(event, name, False))
         self.canvas.bind("<MouseWheel>", self._mouse_wheel)
+        try:
+            # Tk 9 sends this instead of MouseWheel for precise trackpads.
+            self.canvas.bind("<TouchpadScroll>", self._touchpad_scroll)
+        except tk.TclError:
+            # Tk 8.6 continues to deliver gestures through MouseWheel.
+            pass
         for number, dx, dy in ((4, 0, 1), (5, 0, -1), (6, -1, 0), (7, 1, 0)):
             try:
                 self.canvas.bind("<Button-%d>" % number,
@@ -732,6 +743,28 @@ class _Viewer:
         self._wheel_remainders[axis] = total - steps * unit
         return self._scroll(event, -steps if horizontal else 0, 0 if horizontal else steps)
 
+    def _touchpad_scroll(self, event):
+        if self._position(event) is None:
+            self._touchpad_remainders = {"x": 0, "y": 0}
+            return "break"
+        # %D packs two signed 16-bit values: X in the high half, Y in
+        # the low half. Mask both halves because Python/Tk builds can expose
+        # the packed value as either a signed or unsigned 32-bit integer.
+        packed = int(event.delta)
+        deltas = ((packed >> 16) & 0xffff, packed & 0xffff)
+        steps = []
+        for axis, delta in zip(("x", "y"), deltas):
+            if delta >= 0x8000:
+                delta -= 0x10000
+            total = self._touchpad_remainders[axis] + delta
+            count = int(total / _TOUCHPAD_PIXELS_PER_STEP)
+            self._touchpad_remainders[axis] = total - count * _TOUCHPAD_PIXELS_PER_STEP
+            steps.append(count)
+        # Tk positive X scrolls left; pynput positive dx scrolls right.
+        # Positive Y means up in both APIs. macOS already applies the user's
+        # natural-scrolling preference before delivering the event.
+        return self._scroll(event, -steps[0], steps[1])
+
     def _key_press(self, event):
         if self._closed or self._ended or self._image_rect is None or not self._input.ready:
             return "break"
@@ -782,6 +815,7 @@ class _Viewer:
         self._keys_down.clear()
         self._buttons_down.clear()
         self._wheel_remainders = {"x": 0, "y": 0}
+        self._touchpad_remainders = {"x": 0, "y": 0}
 
     def _release_all(self, event=None):
         self._clear_local_input()
