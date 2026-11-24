@@ -113,7 +113,11 @@ class HostHarness:
         self.stack.enter_context(redirect_stderr(self.error_output))
         self.stack.enter_context(patch.object(server, "PORT", 0))
         self.stack.enter_context(patch.object(server, "Desktop", FakeDesktop))
-        self.stack.enter_context(patch.object(server, "serve_stream", self.serve))
+        def negotiated_stream(conn, desktop, *, version):
+            if version != 5:
+                raise AssertionError("Production host must advertise video protocol v5")
+            return self.serve(conn, desktop)
+        self.stack.enter_context(patch.object(server, "serve_stream", negotiated_stream))
         self.stack.enter_context(patch.object(server, "identify", self.identify))
         self.stack.enter_context(patch.object(server.socket, "socket", Listener))
 

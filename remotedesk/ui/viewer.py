@@ -185,7 +185,16 @@ class _RecoveryWorker(threading.Thread):
         self._displayed_frames = self._total_displayed = 0
         self._shown_started = self._last_checkpoint = self._created_at
         self._resolution = 1920
+        self._display_times = deque(maxlen=120)
+        self._media_format = "图片"
         self.inputs.disable()
+
+    @property
+    def display_stats(self):
+        with self._lock:
+            times = self._display_times
+            fps = (len(times) - 1) / (times[-1] - times[0]) if len(times) > 1 and times[-1] > times[0] else 0
+            return self._media_format, fps
 
     @property
     def resolution(self):
@@ -246,6 +255,10 @@ class _RecoveryWorker(threading.Thread):
             if first:
                 self._displayed_frames = 0
                 self._shown_started = self._last_checkpoint = now
+                self._display_times.clear()
+            self._display_times.append(now)
+            while len(self._display_times) > 1 and self._display_times[0] < now - 2:
+                self._display_times.popleft()
             self._displayed_frames += 1
             self._total_displayed += 1
             self._shown_epoch = epoch
@@ -355,7 +368,9 @@ class _RecoveryWorker(threading.Thread):
                     self._apply_resolution(session)
                 self.states.put(("capabilities", resolution_control))
                 continuous_frames = bool(getattr(session, "supports_continuous_frames", False))
-                if continuous_frames:
+                if getattr(session, "supports_video_frames", False):
+                    _lifecycle("已连接视频协议 v5；正在协商清晰视频传输。")
+                elif continuous_frames:
                     _lifecycle("已启用连续画面传输（协议 v4），限制在途画面以避免积压。")
                 else:
                     _lifecycle("共享端使用逐帧请求传输；高延迟下刷新率受网络往返限制。")
@@ -372,6 +387,7 @@ class _RecoveryWorker(threading.Thread):
                     _lifecycle("对方共享端使用旧版传输，键鼠输入需等待画面传输。")
                 self.states.put(("receiving", epoch))
                 _lifecycle("已连接 %s，正在接收画面。" % self.title)
+                previous_format = None
                 while not self._cancelled.is_set():
                     started = time.monotonic()
                     self._raise_sender_error(sender_errors)
@@ -383,6 +399,12 @@ class _RecoveryWorker(threading.Thread):
                         self._raise_sender_error(sender_errors)
                         if self._cancelled.is_set():
                             break
+                        media_format = getattr(session, "media_format", "图片")
+                        with self._lock:
+                            self._media_format = media_format
+                        if media_format != previous_format:
+                            _lifecycle("当前画面格式：%s。" % media_format)
+                            previous_format = media_format
                         self._discard_frames()
                         self.frames.put_nowait((epoch, frame))
                         frame = None  # The queue/UI now owns the independent image.
@@ -709,6 +731,8 @@ class _Viewer:
             return
         hint = "键鼠控制中" if self.canvas.focus_get() == self.canvas else "点击画面控制"
         text = "已连接   ·   %s   ·   %d × %d" % (hint, self._frame.width, self._frame.height)
+        media_format, fps = self._worker.display_stats
+        text += "   ·   %s   ·   %.0f 帧/秒" % (media_format, fps)
         if self.status.get() != text:
             self.status.set(text)
 

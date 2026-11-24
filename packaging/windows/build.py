@@ -22,6 +22,14 @@ WORK = HERE / ".build"
 CACHE = HERE / ".cache"
 PAYLOAD = WORK / "payload"
 OUTPUT = PROJECT / "dist" / "RemoteDesktop-Windows-x64.exe"
+# API-set DLLs are supplied by supported Windows 10+ systems. Keep ordinary
+# system imports explicit so a missing wheel/vendor DLL cannot pass silently.
+WINDOWS_SYSTEM_DLLS = {
+    "advapi32.dll", "avicap32.dll", "bcrypt.dll", "crypt32.dll", "gdi32.dll",
+    "kernel32.dll", "msvcrt.dll", "ncrypt.dll", "ntdll.dll", "ole32.dll",
+    "oleaut32.dll", "rpcrt4.dll", "secur32.dll", "shell32.dll", "shlwapi.dll",
+    "user32.dll", "version.dll", "ws2_32.dll",
+}
 
 
 def digest(path):
@@ -139,7 +147,52 @@ def pe_info(path):
             end = data.index(b"\0", name_offset)
             imports.append(data[name_offset:end].decode("ascii").lower())
             position += 20
-    return {"machine": hex(machine), "subsystem": subsystem, "imports": imports}
+    delay_imports = []
+    delay_rva = struct.unpack_from("<I", data, directory + 13 * 8)[0]
+    if delay_rva:
+        position = file_offset(delay_rva)
+        while any(data[position:position + 32]):
+            attributes, name_rva = struct.unpack_from("<II", data, position)
+            if not attributes & 1:
+                raise ValueError("Unsupported absolute delay-import descriptor: " + str(path))
+            name_offset = file_offset(name_rva)
+            end = data.index(b"\0", name_offset)
+            delay_imports.append(data[name_offset:end].decode("ascii").lower())
+            position += 32
+    return {"machine": hex(machine), "subsystem": subsystem,
+            "imports": imports, "delay_imports": delay_imports}
+
+
+def validate_codec_closure(native):
+    """Resolve every PyAV import, including codec DLLs and their dependencies."""
+    package = "runtime/Lib/site-packages/"
+    roots = {name for name in native if name.startswith((package + "av/", package + "av.libs/"))}
+    if not roots:
+        raise RuntimeError("PyAV native codec payload missing")
+    for prefix in ("avcodec-", "avdevice-", "avfilter-", "avformat-", "avutil-",
+                   "swresample-", "swscale-", "libx264-"):
+        if len([name for name in roots if name.startswith(package + "av.libs/" + prefix)]) != 1:
+            raise RuntimeError("Required PyAV/FFmpeg DLL missing or ambiguous: " + prefix)
+    # av/__init__.py uses os.add_dll_directory for av.libs. The interpreter's
+    # application directory and DLLs directory supply CPython and its CRT.
+    available = {Path(name).name.lower(): name for name in native
+                 if Path(name).parent.as_posix() in {"runtime", "runtime/DLLs", package + "av.libs"}}
+    pending = list(roots)
+    closure = set()
+    system = set()
+    while pending:
+        name = pending.pop()
+        if name in closure:
+            continue
+        closure.add(name)
+        for dependency in native[name]["imports"] + native[name].get("delay_imports", []):
+            if dependency in available:
+                pending.append(available[dependency])
+            elif dependency in WINDOWS_SYSTEM_DLLS or dependency.startswith(("api-ms-win-", "ext-ms-win-")):
+                system.add(dependency)
+            else:
+                raise RuntimeError("Unresolved PyAV native dependency: " + name + " -> " + dependency)
+    return {"bundled": sorted(closure), "windows_system": sorted(system)}
 
 
 def validate_payload():
@@ -151,6 +204,13 @@ def validate_payload():
         "runtime/Lib/tkinter/__init__.py", "runtime/tcl/tcl8.6/init.tcl", "runtime/tcl/tk8.6/tk.tcl",
         "runtime/Lib/site-packages/PIL/ImageTk.py", "runtime/Lib/site-packages/mss/__init__.py",
         "runtime/Lib/site-packages/pynput/keyboard/_win32.py", "runtime/Lib/site-packages/six.py",
+        "runtime/Lib/site-packages/av/__init__.py", "runtime/Lib/site-packages/av/_core.cp312-win_amd64.pyd",
+        "runtime/Lib/site-packages/av/codec/context.cp312-win_amd64.pyd",
+        "runtime/Lib/site-packages/av/video/codeccontext.cp312-win_amd64.pyd",
+        "runtime/Lib/site-packages/av/video/frame.cp312-win_amd64.pyd",
+        "runtime/Lib/site-packages/av/video/reformatter.cp312-win_amd64.pyd",
+        "runtime/Lib/site-packages/av/packet.cp312-win_amd64.pyd",
+        "licenses/codecs/README.md",
     ]
     for relative in required:
         if not (PAYLOAD / relative).is_file():
@@ -170,6 +230,7 @@ def validate_payload():
     imaging_tk = list((PAYLOAD / "runtime/Lib/site-packages/PIL").glob("_imagingtk.cp312-win_amd64.pyd"))
     if len(imaging) != 1 or len(imaging_tk) != 1:
         raise RuntimeError("Pillow CPython 3.12 AMD64 imaging/Tk extensions missing")
+    validate_codec_closure(native)
     return native
 
 
@@ -244,11 +305,14 @@ def main():
     shutil.copytree(PROJECT / "docs/images", PAYLOAD / "docs/images")
     shutil.copy2(HERE / "lock.json", PAYLOAD / "build-lock.json")
     shutil.copy2(HERE / "QUICKSTART.txt", PAYLOAD)
+    shutil.copytree(PROJECT / "packaging/codec-licenses", PAYLOAD / "licenses/codecs")
     icon = PROJECT / "packaging/icons/RemoteDesktop.ico"
     shutil.copy2(icon, PAYLOAD / "RemoteDesktop.ico")
     (PAYLOAD / "THIRD-PARTY-NOTICES.txt").write_text(
         "CPython/python-build-standalone and its bundled Tcl/Tk, OpenSSL and other licenses are in runtime/LICENSE.txt.\n"
         "Python wheel licenses are retained in runtime/Lib/site-packages/*.dist-info/.\n"
+        "PyAV bundles FFmpeg and GPL-licensed x264/x265. Codec notices and source details are in licenses/codecs/.\n"
+        "The corresponding source archive must accompany installer downloads; see licenses/codecs/README.md.\n"
         "Exact versions, source URLs and SHA-256 digests are in build-lock.json.\n", encoding="utf-8")
     native = validate_payload()
     manifest = {path.relative_to(PAYLOAD).as_posix(): {"sha256": digest(path), "size": path.stat().st_size}
@@ -270,10 +334,12 @@ def main():
               "sha256": digest(OUTPUT), "runtime": lock["runtime"], "wheels": lock["wheels"],
               "payload_files_verified": len(manifest), "native_amd64_files": len(native),
               "installer_pe": installer, "native_payload": native,
+              "pyav_dll_closure": validate_codec_closure(native),
               "source_sha256": {relative: item["sha256"] for relative, item in manifest.items()
                                 if relative == "remote_desktop.py" or relative.startswith("remotedesk/")},
               "verified": ["locked download digests", "native AMD64 PE architecture", "GUI/console Python subsystems",
-                           "Tk/Tcl and Pillow native modules", "Python source syntax", "NSIS compressed archive test",
+                           "Tk/Tcl and Pillow native modules", "PyAV native modules and recursive DLL import closure",
+                           "Python source syntax", "NSIS compressed archive test",
                            "every extracted file hash", "asInvoker installer manifest"],
               "limitations": ["Not executed on Windows; install/uninstall, shortcuts, Tk UI and input injection require Windows validation",
                               "Unsigned installer; no Authenticode signature", "Tailscale must already be installed and signed in"]}

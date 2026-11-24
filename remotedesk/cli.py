@@ -15,6 +15,8 @@ def main():
     gui = sub.add_parser("gui", help="打开设备和共享管理窗口（默认）")
     gui.add_argument("--login", action="store_true", help="使用本机保存的登录共享设置")
     sub.add_parser("list", help="列出当前网络中的其他设备")
+    codec_check = sub.add_parser("codec-check", help="用合成画面检查视频组件，不采集屏幕或连接设备")
+    codec_check.add_argument("--output", help="将检查结果写入 JSON 文件")
     host_cmd = sub.add_parser("host", help="共享当前已登录桌面")
     host_cmd.add_argument("--allow", required=True, metavar="DEVICE", help="允许控制本机的 Tailscale 设备")
     connect = sub.add_parser("connect", help="在窗口中打开远程桌面")
@@ -26,6 +28,27 @@ def main():
     sub.add_parser("host-id", help="为面板选定的节点共享桌面").add_argument("node_id")
     sub.add_parser("host-login-id", help="按本机登录设置恢复共享").add_argument("node_id")
     args = parser.parse_args()
+    if args.action == "codec-check":
+        import json
+        from pathlib import Path
+        from PIL import Image
+        from remotedesk.network.video import VideoEncoder, VideoDecoder
+        encoder, decoder = VideoEncoder(), VideoDecoder()
+        try:
+            for color in ("#285d9c", "#b34e37"):
+                with Image.new("RGB", (321, 181), color) as source:
+                    with decoder.decode(encoder.encode(source)) as result:
+                        if result.size != source.size:
+                            raise RuntimeError("视频组件返回了错误的画面尺寸。")
+            report = json.dumps({"ok": True, "codec": "H.264 4:4:4", "frames": 2,
+                                 "resolution": [321, 181]}, ensure_ascii=False)
+            if args.output:
+                Path(args.output).write_text(report + "\n", encoding="utf-8")
+            print(report)
+        finally:
+            encoder.close()
+            decoder.close()
+        return
     if args.action in (None, "gui"):
         from remotedesk.ui.panel import run_panel
         run_panel(login=getattr(args, "login", False))

@@ -33,6 +33,12 @@ class Desktop:
 
 class PipelineRecoveryTests(unittest.TestCase):
     def test_dropped_v4_connection_restarts_with_full_frame_and_input(self):
+        self.check_reconnect(4)
+
+    def test_dropped_v5_connection_restarts_with_idr_and_input(self):
+        self.check_reconnect(5)
+
+    def check_reconnect(self, version):
         sockets, hosts, desktops = [], [], []
         host_errors = []
 
@@ -45,7 +51,7 @@ class PipelineRecoveryTests(unittest.TestCase):
 
             def host():
                 try:
-                    serve_stream(remote, desktop)
+                    serve_stream(remote, desktop, version=version)
                 except (OSError, EOFError):
                     pass  # Intentional transport shutdown during this test.
                 except Exception as error:
@@ -59,7 +65,7 @@ class PipelineRecoveryTests(unittest.TestCase):
             return Session(local)
 
         inputs = _InputBuffer(enabled=False)
-        worker = _RecoveryWorker(factory, 'synthetic v4 recovery', inputs, Image)
+        worker = _RecoveryWorker(factory, 'synthetic v%d recovery' % version, inputs, Image)
 
         def next_frame(minimum_epoch=0):
             deadline = time.monotonic() + 5

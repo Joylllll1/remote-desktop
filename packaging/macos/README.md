@@ -10,4 +10,8 @@ PYTHON=.venv/bin/python bash packaging/macos/build.sh
 
 输出为 `dist/RemoteDesktop-macOS-arm64.dmg` 或 `dist/RemoteDesktop-macOS-x86_64.dmg`，取决于构建解释器的架构。要在 Apple 芯片 Mac 上构建 Intel 版，使用通过 Rosetta 运行的 x86_64 Python 环境并将 `PYTHON` 指向它。两个架构分别安装对应的依赖。
 
+PyAV 16.1.0 的官方二进制依赖要求 Apple 芯片版使用 macOS 14 或更新版本，Intel 版使用 macOS 11 或更新版本。应用元数据也声明相同的最低系统版本。
+
 脚本生成包含 Python、Tk、桌面捕获和输入库的应用，校验本地签名，再制作并校验磁盘镜像。安装时将应用拖到“应用程序”。应用使用本地 ad hoc 签名，尚未经过 Apple 公证；开启共享时需要为应用授予屏幕录制和辅助功能权限。用作控制端时，直接在设备面板中选择对端连接。
+
+应用包含 PyAV、FFmpeg 和 x264/x265 等视频库。spec 收集全部 PyAV 扩展模块、`av/.dylibs` 动态库及其许可证；完整通知位于应用资源的 `licenses/codecs`。发布安装包时，同时提供 [编解码器对应源码](../codec-licenses/README.md) 所述的 `RemoteDesktop-Codec-Sources.zip`。

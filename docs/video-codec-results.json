@@ -1,0 +1,511 @@
+{
+  "environment": {
+    "created_utc": "2026-11-24T09:29:41.152348+00:00",
+    "python": "3.12.14 (main, Aug 25 2026, 13:50:33) [Clang 22.1.3 ]",
+    "platform": "macOS-26.5.2-arm64-arm-64bit",
+    "cpu_count": 10,
+    "packages": {
+      "Pillow": "13.0.0",
+      "av": "16.1.0"
+    },
+    "source_sha256": {
+      "tools/benchmark_video.py": "4c3be3acc79f6955521daf0392dcca842c3826329818e647466c72f1a062f8d4",
+      "remotedesk/network/tiles.py": "8c94e4eaf351830014f501d2f08be2a783e8d2ba5332709d95415f609ea71d95",
+      "remotedesk/network/video.py": "ede4e875c0e2c8d661998bced88b7c571855952ef3fb767667ccae33127254a5",
+      "remotedesk/network/stream.py": "1a2143e148de4c050cefbbf5c92c14b3f69208327c53d8b2229e811c7b0ec7e0",
+      "remotedesk/network/session.py": "9145cbebfd459ed6de25d214d09f5a0bfde093e2e084aa678f937f02b0b6291e"
+    },
+    "font": "Pillow bundled default at 14/17/22 px",
+    "method": "Equal elapsed-time motion; 10fps tiles vs 30fps video; no real desktop or network.",
+    "memory_bound": "One source/decoded frame at a time; 8 x 4096-byte proxy chunks per direction; 16 source timestamps; at most 60 synthetic seconds per trial."
+  },
+  "settings": {
+    "seconds": 10,
+    "conditions": [
+      "tiles",
+      "video"
+    ],
+    "scenes": [
+      "static_text",
+      "scrolling",
+      "window_drag"
+    ],
+    "loopback": false,
+    "loopback_only": false,
+    "rtt_ms": 40,
+    "mbps": 8
+  },
+  "results": [
+    {
+      "kind": "codec_capacity",
+      "condition": "tiles",
+      "scene": "static_text",
+      "resolution": [
+        1920,
+        1080
+      ],
+      "synthetic_duration_s": 10,
+      "target_fps": 10,
+      "frames": 100,
+      "wall_s": 0.5415,
+      "render": {
+        "mean_ms": 0.55,
+        "p50_ms": 0.518,
+        "p95_ms": 0.686,
+        "max_ms": 1.685
+      },
+      "encode": {
+        "mean_ms": 0.587,
+        "p50_ms": 0.444,
+        "p95_ms": 0.659,
+        "max_ms": 11.413
+      },
+      "decode": {
+        "mean_ms": 0.273,
+        "p50_ms": 0.208,
+        "p95_ms": 0.301,
+        "max_ms": 5.377
+      },
+      "codec_pair": {
+        "mean_ms": 0.86,
+        "p50_ms": 0.657,
+        "p95_ms": 0.904,
+        "max_ms": 16.791
+      },
+      "encode_capacity_fps": 1703.697,
+      "decode_capacity_fps": 3667.044,
+      "serial_codec_capacity_fps": 1163.253,
+      "serial_codec_time_fraction_at_target_fps": 0.0086,
+      "payload_bytes": 244204,
+      "payload_mbps": 0.19536,
+      "mean_payload_bytes": 2442.04,
+      "payload_types": {
+        "J": 1,
+        "U": 99
+      },
+      "fidelity_sampling": "Every frame, uniformly spaced over the same elapsed-time duration; error is normalized per channel sample.",
+      "fidelity": {
+        "sample_count": 100,
+        "first_sample_source_s": 0.0,
+        "last_sample_source_s": 9.9,
+        "sample_source_seconds_preview": [
+          0.0,
+          0.1,
+          0.2,
+          0.3,
+          0.4,
+          9.5,
+          9.6,
+          9.7,
+          9.8,
+          9.9
+        ],
+        "full_rgb": {
+          "mae_0_255": 1.16242,
+          "psnr_db": 36.588,
+          "exact": false,
+          "channel_samples": 622080000
+        },
+        "colored_text_and_lines_foreground_rgb": {
+          "mae_0_255": 10.39909,
+          "psnr_db": 24.9309,
+          "exact": false,
+          "channel_samples": 3106800
+        },
+        "note": "PSNR null with exact=true means zero error; these are RGB fidelity metrics, not OCR."
+      }
+    },
+    {
+      "kind": "codec_capacity",
+      "condition": "video",
+      "scene": "static_text",
+      "resolution": [
+        1920,
+        1080
+      ],
+      "synthetic_duration_s": 10,
+      "target_fps": 30,
+      "frames": 300,
+      "wall_s": 5.1641,
+      "render": {
+        "mean_ms": 0.53,
+        "p50_ms": 0.52,
+        "p95_ms": 0.639,
+        "max_ms": 0.78
+      },
+      "encode": {
+        "mean_ms": 7.295,
+        "p50_ms": 6.533,
+        "p95_ms": 8.711,
+        "max_ms": 135.64
+      },
+      "decode": {
+        "mean_ms": 5.308,
+        "p50_ms": 5.11,
+        "p95_ms": 6.232,
+        "max_ms": 22.051
+      },
+      "codec_pair": {
+        "mean_ms": 12.602,
+        "p50_ms": 11.644,
+        "p95_ms": 14.947,
+        "max_ms": 157.692
+      },
+      "encode_capacity_fps": 137.083,
+      "decode_capacity_fps": 188.409,
+      "serial_codec_capacity_fps": 79.35,
+      "serial_codec_time_fraction_at_target_fps": 0.3781,
+      "payload_bytes": 1221389,
+      "payload_mbps": 0.97711,
+      "mean_payload_bytes": 4071.3,
+      "payload_types": {
+        "H": 300
+      },
+      "fidelity_sampling": "Every frame, uniformly spaced over the same elapsed-time duration; error is normalized per channel sample.",
+      "fidelity": {
+        "sample_count": 300,
+        "first_sample_source_s": 0.0,
+        "last_sample_source_s": 9.966667,
+        "sample_source_seconds_preview": [
+          0.0,
+          0.033333,
+          0.066667,
+          0.1,
+          0.133333,
+          9.833333,
+          9.866667,
+          9.9,
+          9.933333,
+          9.966667
+        ],
+        "full_rgb": {
+          "mae_0_255": 0.56809,
+          "psnr_db": 43.3732,
+          "exact": false,
+          "channel_samples": 1866240000
+        },
+        "colored_text_and_lines_foreground_rgb": {
+          "mae_0_255": 4.71081,
+          "psnr_db": 31.2594,
+          "exact": false,
+          "channel_samples": 9320400
+        },
+        "note": "PSNR null with exact=true means zero error; these are RGB fidelity metrics, not OCR."
+      }
+    },
+    {
+      "kind": "codec_capacity",
+      "condition": "tiles",
+      "scene": "scrolling",
+      "resolution": [
+        1920,
+        1080
+      ],
+      "synthetic_duration_s": 10,
+      "target_fps": 10,
+      "frames": 100,
+      "wall_s": 2.0763,
+      "render": {
+        "mean_ms": 0.505,
+        "p50_ms": 0.489,
+        "p95_ms": 0.613,
+        "max_ms": 0.726
+      },
+      "encode": {
+        "mean_ms": 11.55,
+        "p50_ms": 11.563,
+        "p95_ms": 12.013,
+        "max_ms": 12.65
+      },
+      "decode": {
+        "mean_ms": 4.578,
+        "p50_ms": 4.55,
+        "p95_ms": 4.895,
+        "max_ms": 5.159
+      },
+      "codec_pair": {
+        "mean_ms": 16.127,
+        "p50_ms": 16.121,
+        "p95_ms": 16.809,
+        "max_ms": 17.668
+      },
+      "encode_capacity_fps": 86.583,
+      "decode_capacity_fps": 218.459,
+      "serial_codec_capacity_fps": 62.007,
+      "serial_codec_time_fraction_at_target_fps": 0.1613,
+      "payload_bytes": 17388617,
+      "payload_mbps": 13.91089,
+      "mean_payload_bytes": 173886.17,
+      "payload_types": {
+        "J": 1,
+        "T": 99
+      },
+      "fidelity_sampling": "Every frame, uniformly spaced over the same elapsed-time duration; error is normalized per channel sample.",
+      "fidelity": {
+        "sample_count": 100,
+        "first_sample_source_s": 0.0,
+        "last_sample_source_s": 9.9,
+        "sample_source_seconds_preview": [
+          0.0,
+          0.1,
+          0.2,
+          0.3,
+          0.4,
+          9.5,
+          9.6,
+          9.7,
+          9.8,
+          9.9
+        ],
+        "full_rgb": {
+          "mae_0_255": 0.45197,
+          "psnr_db": 41.9231,
+          "exact": false,
+          "channel_samples": 622080000
+        },
+        "colored_text_and_lines_foreground_rgb": {
+          "mae_0_255": 10.39909,
+          "psnr_db": 24.9309,
+          "exact": false,
+          "channel_samples": 3106800
+        },
+        "note": "PSNR null with exact=true means zero error; these are RGB fidelity metrics, not OCR."
+      }
+    },
+    {
+      "kind": "codec_capacity",
+      "condition": "video",
+      "scene": "scrolling",
+      "resolution": [
+        1920,
+        1080
+      ],
+      "synthetic_duration_s": 10,
+      "target_fps": 30,
+      "frames": 300,
+      "wall_s": 5.2096,
+      "render": {
+        "mean_ms": 0.534,
+        "p50_ms": 0.518,
+        "p95_ms": 0.671,
+        "max_ms": 1.108
+      },
+      "encode": {
+        "mean_ms": 7.402,
+        "p50_ms": 7.098,
+        "p95_ms": 9.176,
+        "max_ms": 12.946
+      },
+      "decode": {
+        "mean_ms": 5.355,
+        "p50_ms": 5.17,
+        "p95_ms": 6.371,
+        "max_ms": 12.75
+      },
+      "codec_pair": {
+        "mean_ms": 12.757,
+        "p50_ms": 12.32,
+        "p95_ms": 15.251,
+        "max_ms": 22.418
+      },
+      "encode_capacity_fps": 135.102,
+      "decode_capacity_fps": 186.742,
+      "serial_codec_capacity_fps": 78.39,
+      "serial_codec_time_fraction_at_target_fps": 0.3827,
+      "payload_bytes": 1892743,
+      "payload_mbps": 1.51419,
+      "mean_payload_bytes": 6309.14,
+      "payload_types": {
+        "H": 300
+      },
+      "fidelity_sampling": "Every frame, uniformly spaced over the same elapsed-time duration; error is normalized per channel sample.",
+      "fidelity": {
+        "sample_count": 300,
+        "first_sample_source_s": 0.0,
+        "last_sample_source_s": 9.966667,
+        "sample_source_seconds_preview": [
+          0.0,
+          0.033333,
+          0.066667,
+          0.1,
+          0.133333,
+          9.833333,
+          9.866667,
+          9.9,
+          9.933333,
+          9.966667
+        ],
+        "full_rgb": {
+          "mae_0_255": 0.56534,
+          "psnr_db": 42.8647,
+          "exact": false,
+          "channel_samples": 1866240000
+        },
+        "colored_text_and_lines_foreground_rgb": {
+          "mae_0_255": 5.415,
+          "psnr_db": 30.2789,
+          "exact": false,
+          "channel_samples": 9320400
+        },
+        "note": "PSNR null with exact=true means zero error; these are RGB fidelity metrics, not OCR."
+      }
+    },
+    {
+      "kind": "codec_capacity",
+      "condition": "tiles",
+      "scene": "window_drag",
+      "resolution": [
+        1920,
+        1080
+      ],
+      "synthetic_duration_s": 10,
+      "target_fps": 10,
+      "frames": 100,
+      "wall_s": 1.3847,
+      "render": {
+        "mean_ms": 0.59,
+        "p50_ms": 0.562,
+        "p95_ms": 0.765,
+        "max_ms": 0.883
+      },
+      "encode": {
+        "mean_ms": 7.336,
+        "p50_ms": 7.334,
+        "p95_ms": 7.741,
+        "max_ms": 8.006
+      },
+      "decode": {
+        "mean_ms": 1.776,
+        "p50_ms": 1.751,
+        "p95_ms": 1.956,
+        "max_ms": 3.687
+      },
+      "codec_pair": {
+        "mean_ms": 9.112,
+        "p50_ms": 9.075,
+        "p95_ms": 9.746,
+        "max_ms": 9.931
+      },
+      "encode_capacity_fps": 136.31,
+      "decode_capacity_fps": 563.179,
+      "serial_codec_capacity_fps": 109.747,
+      "serial_codec_time_fraction_at_target_fps": 0.0911,
+      "payload_bytes": 5866169,
+      "payload_mbps": 4.69294,
+      "mean_payload_bytes": 58661.69,
+      "payload_types": {
+        "J": 1,
+        "T": 99
+      },
+      "fidelity_sampling": "Every frame, uniformly spaced over the same elapsed-time duration; error is normalized per channel sample.",
+      "fidelity": {
+        "sample_count": 100,
+        "first_sample_source_s": 0.0,
+        "last_sample_source_s": 9.9,
+        "sample_source_seconds_preview": [
+          0.0,
+          0.1,
+          0.2,
+          0.3,
+          0.4,
+          9.5,
+          9.6,
+          9.7,
+          9.8,
+          9.9
+        ],
+        "full_rgb": {
+          "mae_0_255": 0.78149,
+          "psnr_db": 38.6244,
+          "exact": false,
+          "channel_samples": 622080000
+        },
+        "colored_text_and_lines_foreground_rgb": {
+          "mae_0_255": 10.39909,
+          "psnr_db": 24.9309,
+          "exact": false,
+          "channel_samples": 3106800
+        },
+        "note": "PSNR null with exact=true means zero error; these are RGB fidelity metrics, not OCR."
+      }
+    },
+    {
+      "kind": "codec_capacity",
+      "condition": "video",
+      "scene": "window_drag",
+      "resolution": [
+        1920,
+        1080
+      ],
+      "synthetic_duration_s": 10,
+      "target_fps": 30,
+      "frames": 300,
+      "wall_s": 5.1067,
+      "render": {
+        "mean_ms": 0.573,
+        "p50_ms": 0.569,
+        "p95_ms": 0.679,
+        "max_ms": 0.787
+      },
+      "encode": {
+        "mean_ms": 7.178,
+        "p50_ms": 6.905,
+        "p95_ms": 8.909,
+        "max_ms": 11.619
+      },
+      "decode": {
+        "mean_ms": 5.262,
+        "p50_ms": 5.028,
+        "p95_ms": 6.277,
+        "max_ms": 19.616
+      },
+      "codec_pair": {
+        "mean_ms": 12.44,
+        "p50_ms": 11.931,
+        "p95_ms": 15.061,
+        "max_ms": 30.16
+      },
+      "encode_capacity_fps": 139.312,
+      "decode_capacity_fps": 190.037,
+      "serial_codec_capacity_fps": 80.384,
+      "serial_codec_time_fraction_at_target_fps": 0.3732,
+      "payload_bytes": 1734242,
+      "payload_mbps": 1.38739,
+      "mean_payload_bytes": 5780.81,
+      "payload_types": {
+        "H": 300
+      },
+      "fidelity_sampling": "Every frame, uniformly spaced over the same elapsed-time duration; error is normalized per channel sample.",
+      "fidelity": {
+        "sample_count": 300,
+        "first_sample_source_s": 0.0,
+        "last_sample_source_s": 9.966667,
+        "sample_source_seconds_preview": [
+          0.0,
+          0.033333,
+          0.066667,
+          0.1,
+          0.133333,
+          9.833333,
+          9.866667,
+          9.9,
+          9.933333,
+          9.966667
+        ],
+        "full_rgb": {
+          "mae_0_255": 0.71521,
+          "psnr_db": 41.7734,
+          "exact": false,
+          "channel_samples": 1866240000
+        },
+        "colored_text_and_lines_foreground_rgb": {
+          "mae_0_255": 5.46619,
+          "psnr_db": 30.0747,
+          "exact": false,
+          "channel_samples": 9320400
+        },
+        "note": "PSNR null with exact=true means zero error; these are RGB fidelity metrics, not OCR."
+      }
+    }
+  ]
+}

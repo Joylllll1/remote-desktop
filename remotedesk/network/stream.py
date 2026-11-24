@@ -1,6 +1,6 @@
-"""Full-duplex input with versioned JPEG or regional image updates.
+"""Full-duplex input with versioned image updates or H.264 video.
 
-V4 continuously sends fresh, paced images within a decode-acknowledged window.
+V4/V5 send fresh images/video within a decode-acknowledged window.
 Older peers retain request/reply framing. Socket mode stays nonblocking so one
 direction cannot change the other's timeout. Capture stays in its owning
 thread; the independent control reader owns input injection and its lease.
@@ -20,6 +20,7 @@ from remotedesk.network.session import MAX_FRAME, MAX_INPUT, check_events
 READY_V2 = b"remote-desktop/2 ready"
 READY_V3 = b"remote-desktop/3 ready"
 READY = b"remote-desktop/4 ready"
+READY_V5 = b"remote-desktop/5 ready"
 BUSY = b"remote-desktop/2 busy"
 INPUT_LEASE = 3.0
 CONTROL_IDLE = 45.0
@@ -30,6 +31,7 @@ TRANSFER_TOTAL = 60.0
 MAX_IN_FLIGHT_FRAMES = 3
 MAX_IN_FLIGHT_BYTES = 512 * 1024
 FRAME_INTERVAL = 0.1
+VIDEO_FRAME_INTERVAL = 1 / 30
 FRAME_HEADER = struct.Struct("!QH")  # sequence, requested resolution profile
 
 
@@ -123,6 +125,12 @@ class StreamClient:
         self._closed = threading.Event()
         self._previous = None
         self._decoder = None
+        self._video_decoder = None
+        self._video_requested = False
+        self.media_format = "图片"
+        if version >= 5:
+            from remotedesk.network.video import decoder_available
+            self._video_requested = decoder_available()
         self._width = 1920
         self._started = False
         self._received_sequence = 0
@@ -148,6 +156,8 @@ class StreamClient:
             command = {"events": events, "frame": frame}
             if self.version >= 3 and frame:
                 command["width"] = self._width
+            if self.version >= 5 and frame and not self._started:
+                command["codec"] = "h264" if self._video_requested else "tiles"
             if ack is not None:
                 command["ack"] = ack
             self._write_command(command)
@@ -202,7 +212,18 @@ class StreamClient:
                     sequence, width = FRAME_HEADER.unpack_from(payload)
                     if sequence != self._received_sequence + 1 or width not in (1280, 1920):
                         raise ValueError("共享端返回了无效的画面序号或宽度。")
-                    image = self._decoder.decode(payload[FRAME_HEADER.size:])
+                    body = payload[FRAME_HEADER.size:]
+                    if body[:1] == b"H":
+                        if self.version < 5 or not self._video_requested:
+                            raise ValueError("共享端发送了未协商的视频格式。")
+                        if self._video_decoder is None:
+                            from remotedesk.network.video import VideoDecoder
+                            self._video_decoder = VideoDecoder()
+                        image = self._video_decoder.decode(body)
+                        self.media_format = "H.264 · 4:4:4"
+                    else:
+                        image = self._decoder.decode(body)
+                        self.media_format = "图片"
                     try:
                         # Decode every delta in order, including buffered images
                         # from the old profile. Only validated images free credit.
@@ -227,6 +248,9 @@ class StreamClient:
             if self._decoder is not None:
                 self._decoder.close()
                 self._decoder = None
+            if self._video_decoder is not None:
+                self._video_decoder.close()
+                self._video_decoder = None
 
 
 def serve_stream(conn, desktop, *, version=4):
@@ -234,7 +258,7 @@ def serve_stream(conn, desktop, *, version=4):
     if version >= 3 and not callable(getattr(desktop, "capture_image", None)):
         raise RuntimeError("共享端缺少新版屏幕采集组件，请重新安装完整版本。")
     _configure(conn)
-    greeting = READY if version >= 4 else READY_V3 if version >= 3 else READY_V2
+    greeting = READY_V5 if version >= 5 else READY if version >= 4 else READY_V3 if version >= 3 else READY_V2
     write_packet(conn, greeting, 128, idle=12, total=12)
     if version < 3 and hasattr(desktop, "reset_stream"):
         desktop.reset_stream(minimum_width=1280)
@@ -245,6 +269,7 @@ def serve_stream(conn, desktop, *, version=4):
     requested_width = 1920
     request_lock = threading.Condition()
     streaming = False
+    requested_codec = "tiles"
     outstanding = deque()
     outstanding_bytes = 0
     last_sequence = last_ack = 0
@@ -256,16 +281,22 @@ def serve_stream(conn, desktop, *, version=4):
             print("控制心跳延迟，已释放按键和鼠标；继续等待连接恢复。", flush=True)
 
     def controls():
-        nonlocal last_command, requested_width, streaming, outstanding_bytes, last_ack
+        nonlocal last_command, requested_width, streaming, outstanding_bytes, last_ack, requested_codec
         try:
             while not stopped.is_set():
                 raw = read_packet(conn, MAX_INPUT, idle=CONTROL_IDLE, total=CONTROL_IDLE,
                                   tick=release_if_expired, label="控制指令", cancelled=stopped)
                 command = json.loads(raw)
                 allowed = {"events", "frame", "width", "ack"} if version >= 4 else {"events", "frame", "width"}
+                if version >= 5:
+                    allowed.add("codec")
                 if (type(command) is not dict or not {"events", "frame"} <= set(command)
                         or not set(command) <= allowed or type(command["frame"]) is not bool):
                     raise ValueError("控制指令格式无效。")
+                if "codec" in command:
+                    if streaming or not command["frame"] or command["codec"] not in ("h264", "tiles"):
+                        raise ValueError("视频格式只能在首次画面请求中协商。")
+                    requested_codec = command["codec"]
                 width = command.get("width", 1920)
                 if (type(width) is not int or width not in (1280, 1920)
                         or ("width" in command and (version < 3 or (version < 4 and not command["frame"])))):
@@ -311,6 +342,11 @@ def serve_stream(conn, desktop, *, version=4):
     previous = None
     phase = "等待画面请求"
     next_capture = 0.0
+    codec_selected = False
+    video = False
+    report_at = time.monotonic()
+    report_frames = report_bytes = 0
+    report_capture = report_send = 0.0
     try:
         while not stopped.is_set():
             if version >= 4:
@@ -341,9 +377,19 @@ def serve_stream(conn, desktop, *, version=4):
                     width = requested_width
             if stopped.is_set():
                 break
+            if version >= 5 and not codec_selected:
+                if requested_codec == "h264":
+                    from remotedesk.network.video import VideoEncoder, encoder_available
+                    if encoder_available():
+                        encoder.close()
+                        encoder = VideoEncoder()
+                        video = True
+                codec_selected = True
+                print("画面传输：H.264 4:4:4，最高 30 帧/秒，保留所选分辨率。" if video else
+                      "画面传输：图片兼容模式，最高 10 帧/秒。", flush=True)
             phase = "采集桌面"
             started = time.monotonic()
-            next_capture = started + FRAME_INTERVAL
+            next_capture = started + (VIDEO_FRAME_INTERVAL if video else FRAME_INTERVAL)
             if encoder is not None:
                 with desktop.capture_image(max_width=width) as frame:
                     payload = encoder.encode(frame)
@@ -376,6 +422,17 @@ def serve_stream(conn, desktop, *, version=4):
             write_packet(conn, payload, MAX_FRAME + 1 + (FRAME_HEADER.size if version >= 4 else 0),
                          cancelled=stopped)
             finished = time.monotonic()
+            report_frames += 1
+            report_bytes += len(payload)
+            report_capture += captured - started
+            report_send += finished - captured
+            elapsed = finished - report_at
+            if version >= 5 and elapsed >= 5:
+                print("画面统计：%.1f 帧/秒，%.2f Mbps，采集编码 %.1f ms/帧，发送 %.1f ms/帧。" %
+                      (report_frames / elapsed, report_bytes * 8 / elapsed / 1_000_000,
+                       report_capture * 1000 / report_frames, report_send * 1000 / report_frames), flush=True)
+                report_at, report_frames, report_bytes = finished, 0, 0
+                report_capture = report_send = 0.0
             if version < 3 and hasattr(desktop, "frame_transmitted"):
                 desktop.frame_transmitted(payload != b"U")
             if finished - started >= 1:

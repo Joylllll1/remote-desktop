@@ -86,6 +86,7 @@ class Session:
         self.supports_async_input = False
         self.supports_resolution_control = False
         self.supports_continuous_frames = False
+        self.supports_video_frames = False
         try:
             try:
                 greeting = receive(sock, 128)
@@ -93,15 +94,16 @@ class Session:
                 raise TimeoutError("已接通共享端口，等待设备授权响应超时。") from error
             if greeting == DENIED:
                 raise ValueError("这台电脑未获授权。请在对方的「共享本机」中选中这台电脑，再开始共享。")
-            from remotedesk.network.stream import BUSY, READY as STREAM_READY, READY_V2, READY_V3, StreamClient
+            from remotedesk.network.stream import BUSY, READY as STREAM_READY, READY_V2, READY_V3, READY_V5, StreamClient
             if greeting == BUSY:
                 raise ConnectionError("共享端正在结束上一次会话，请稍候重试。")
-            if greeting in (STREAM_READY, READY_V3, READY_V2):
-                version = 4 if greeting == STREAM_READY else 3 if greeting == READY_V3 else 2
+            if greeting in (READY_V5, STREAM_READY, READY_V3, READY_V2):
+                version = 5 if greeting == READY_V5 else 4 if greeting == STREAM_READY else 3 if greeting == READY_V3 else 2
                 self._stream = StreamClient(sock, version=version)
                 self.supports_async_input = True
                 self.supports_resolution_control = version >= 3
                 self.supports_continuous_frames = version >= 4
+                self.supports_video_frames = version >= 5
             elif greeting != READY:
                 raise ValueError("对端运行了其他服务或协议版本不兼容。")
         except BaseException:
@@ -120,6 +122,10 @@ class Session:
             return receive(self.sock, MAX_FRAME, frame_timeout=FRAME_TOTAL_TIMEOUT)
         except TimeoutError as error:
             raise TimeoutError("已获授权，接收桌面画面超时。") from error
+
+    @property
+    def media_format(self):
+        return self._stream.media_format if self._stream is not None else "图片"
 
     def send_input(self, events):
         if self._stream is None:

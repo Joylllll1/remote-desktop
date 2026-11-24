@@ -20,6 +20,8 @@ WHEELS = {
     'six-1.17.0-py2.py3-none-any.whl': '4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274',
     'pillow-13.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl': '42d63be3af4f9b951b199b0a9d23365d37ab14687e6d77b74940432c8515c4ca',
     'pillow-13.0.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl': '5f56499c1a74d2b862beb0c33b8016f99d095858455df9d21583bbbc1c15b582',
+    'av-16.1.0-cp312-cp312-manylinux_2_28_x86_64.whl': '7ae547f6d5fa31763f73900d43901e8c5fa6367bb9a9840978d57b5a7ae14ed2',
+    'av-16.1.0-cp313-cp313-manylinux_2_28_x86_64.whl': 'adbad2b355c2ee4552cac59762809d791bda90586d134a33c6f13727fb86cb3a',
 }
 
 
@@ -64,7 +66,7 @@ def main():
         wheels.mkdir(parents=True, exist_ok=True)
         if not args.wheel_dir:
             for version in ('312', '313'):
-                packages = ['pillow==13.0.0']
+                packages = ['pillow==13.0.0', 'av==16.1.0']
                 if version == '312':
                     packages += ['mss==10.2.0', 'pynput==1.8.2', 'python-xlib==0.33', 'six==1.17.0']
                 subprocess.run([sys.executable, '-m', 'pip', 'download', '--no-deps', '--only-binary=:all:',
@@ -94,6 +96,7 @@ def main():
         write(payload/'usr/bin/remote-desktop', '#!/bin/sh\nexec /usr/bin/python3 -I /opt/remote-desktop/remote_desktop.py "$@"\n', 0o755)
         shutil.copytree(Path(__file__).with_name('assets'), payload/'usr/share', dirs_exist_ok=True)
         shutil.copy2(ROOT/'LICENSE', app/'LICENSE')
+        shutil.copytree(ROOT/'packaging/codec-licenses', payload/'usr/share/doc/remote-desktop-personal/codecs')
         write(payload/'usr/share/doc/remote-desktop-personal/copyright', (ROOT/'LICENSE').read_text() + '\nBundled dependencies retain their upstream license files under /opt/remote-desktop/vendor.\n')
         write(payload/'usr/share/doc/remote-desktop-personal/README', Path(__file__).with_name('README.md').read_text())
         write(payload/'usr/share/doc/remote-desktop-personal/vendor-sha256.txt', ''.join(f'{digest}  {name}\n' for name, digest in WHEELS.items()))
