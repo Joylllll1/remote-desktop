@@ -6,7 +6,9 @@ The installers include PyAV 16.1.0 (BSD-3-Clause), FFmpeg 8.0.1 and its codec de
 
 The upstream FFmpeg build patches its license detection to classify x264/x265 as version-3 dependencies. Its library API consequently reports “LGPL version 3 or later” while the actual binaries link x264/x265. That reported string and PyAV's BSD wheel metadata do not eliminate the codec libraries' GPL obligations. The original patch is preserved in the corresponding build-recipe source archive.
 
-Every binary release containing these codecs must offer `RemoteDesktop-Codec-Sources.zip` beside the installers at the same download location. This source archive contains the pinned upstream source tarballs, PyAV source, the complete upstream build recipes and patches, and the matching Remote Desktop source and packaging scripts. It is source delivery, not a written offer. Keep the source download available with the corresponding binaries.
+Every binary release containing these codecs must provide clear links beside the installers to both the matching Remote Desktop source and the pinned codec sources. Keep both downloads available with the corresponding binaries. This is source delivery, not a written offer.
+
+For releases reusing the unchanged PyAV 16.1.0 wheels and this `sources.json`, the third-party sources and build recipes are in [the shared codec source archive](https://github.com/Joylllll1/remote-desktop/releases/download/v0.1.6-rc.4/RemoteDesktop-Codec-Sources.zip) (SHA-256 `a3b0469f7804e500057bd18a4f73412328515004ff0978ab268f20e83518112a`). Use its `upstream/` directory, which contains all 32 component/build-recipe archives. Use the **current release's Source code ZIP or tag** for Remote Desktop, its packaging scripts and notices; the older `remote-desktop/` copy inside the shared archive is not the source for later application releases. The two downloads together supply the matching application and unchanged dependency sources. If dependencies change, publish a new corresponding archive.
 
 Build the archive from the same source tree used for the installers:
 

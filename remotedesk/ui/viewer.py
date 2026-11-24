@@ -6,6 +6,7 @@ import queue
 import sys
 import threading
 import time
+from remotedesk.network.timing import FrameTimer
 
 
 _SPECIAL_KEYS = {
@@ -42,6 +43,8 @@ _SHORTCUT_MODIFIERS = {"ctrl_l", "ctrl_r", "cmd", "cmd_l", "cmd_r", "alt_l", "al
 _MODIFIER_KEYS = _SHORTCUT_MODIFIERS | {"shift_l", "shift_r", "alt_gr"}
 _RETRY_DELAYS = (1, 2, 5, 10, 20)
 _RESOLUTIONS = {"清晰 · 1920": 1920, "省流量 · 1280": 1280}
+_FRAME_RATES = {"流畅 · 60 帧": 60, "标准 · 30 帧": 30}
+_DISPLAY_POLL_MS = 8
 # Tk 9 touchpad deltas are pixel-like movement, whereas the wire protocol and
 # pynput use wheel steps. Accumulate small movements rather than dropping them
 # or sending one whole wheel step per pixel.
@@ -185,6 +188,7 @@ class _RecoveryWorker(threading.Thread):
         self._displayed_frames = self._total_displayed = 0
         self._shown_started = self._last_checkpoint = self._created_at
         self._resolution = 1920
+        self._frame_rate = 60
         self._display_times = deque(maxlen=120)
         self._media_format = "图片"
         self.inputs.disable()
@@ -209,6 +213,19 @@ class _RecoveryWorker(threading.Thread):
 
     def _apply_resolution(self, session):
         session.set_resolution(self.resolution)
+        if getattr(session, "supports_frame_rate_control", False):
+            session.set_frame_rate(self.frame_rate)
+
+    @property
+    def frame_rate(self):
+        with self._lock:
+            return self._frame_rate
+
+    def set_frame_rate(self, fps):
+        if type(fps) is not int or fps not in (30, 60):
+            raise ValueError("帧率只能选择 30 或 60。")
+        with self._lock:
+            self._frame_rate = fps
 
     @property
     def terminal_error(self):
@@ -367,8 +384,11 @@ class _RecoveryWorker(threading.Thread):
                 if resolution_control:
                     self._apply_resolution(session)
                 self.states.put(("capabilities", resolution_control))
+                self.states.put(("frame_rate_capability", bool(getattr(session, "supports_frame_rate_control", False))))
                 continuous_frames = bool(getattr(session, "supports_continuous_frames", False))
-                if getattr(session, "supports_video_frames", False):
+                if getattr(session, "supports_frame_rate_control", False):
+                    _lifecycle("已连接视频协议 v6，可选择 30/60 帧。")
+                elif getattr(session, "supports_video_frames", False):
                     _lifecycle("已连接视频协议 v5；正在协商清晰视频传输。")
                 elif continuous_frames:
                     _lifecycle("已启用连续画面传输（协议 v4），限制在途画面以避免积压。")
@@ -462,6 +482,7 @@ class _Viewer:
         self.Image = Image
         self.ImageTk = ImageTk
         self.root = tk.Tk()
+        self._frame_timer = FrameTimer()
         self.root.title(title)
         width = min(1100, max(420, self.root.winfo_screenwidth() - 80))
         height = min(740, max(280, self.root.winfo_screenheight() - 110))
@@ -478,6 +499,11 @@ class _Viewer:
             values=tuple(_RESOLUTIONS), state="disabled", width=13)
         self._resolution_combo.pack(side="left", padx=(6, 10))
         self._resolution_combo.bind("<<ComboboxSelected>>", self._resolution_changed)
+        self._frame_rate_choice = tk.StringVar(value="流畅 · 60 帧")
+        self._frame_rate_combo = ttk.Combobox(quality_bar, textvariable=self._frame_rate_choice,
+            values=tuple(_FRAME_RATES), state="disabled", width=14)
+        self._frame_rate_combo.pack(side="left", padx=(0, 10))
+        self._frame_rate_combo.bind("<<ComboboxSelected>>", self._frame_rate_changed)
         self._resolution_hint = tk.StringVar(value="连接后可选择画质")
         hint = tk.Label(quality_bar, textvariable=self._resolution_hint, anchor="w", justify="left",
                         bg="#f7faf9", fg="#536d65")
@@ -556,7 +582,7 @@ class _Viewer:
 
     def run(self):
         self._worker.start()
-        self._poll_job = self.root.after(20, self._poll)
+        self._poll_job = self.root.after(_DISPLAY_POLL_MS, self._poll)
         self._focus_job = self.root.after_idle(self.canvas.focus_set)
         try:
             self.root.mainloop()
@@ -571,6 +597,21 @@ class _Viewer:
         self._worker.set_resolution(_RESOLUTIONS[label])
         _lifecycle("画质选择：%s，下一帧请求生效。" % label)
 
+    def _frame_rate_changed(self, event=None):
+        label = self._frame_rate_choice.get()
+        self._worker.set_frame_rate(_FRAME_RATES[label])
+        self._frame_timer.set_rate(_FRAME_RATES[label])
+        _lifecycle("帧率选择：%s，下一帧请求生效。" % label)
+
+    def _set_frame_rate_capability(self, supported):
+        self._frame_rate_combo.configure(state="readonly" if supported else "disabled")
+        self._frame_timer.set_rate(self._worker.frame_rate if supported else 30)
+        if supported:
+            self._frame_rate_choice.set(next(label for label, fps in _FRAME_RATES.items()
+                                             if fps == self._worker.frame_rate))
+        elif supported is False:
+            self._frame_rate_choice.set("由共享端决定")
+
     def _set_resolution_capability(self, supported):
         self._resolution_combo.configure(state="readonly" if supported else "disabled")
         self._resolution_hint.set("" if supported else (
@@ -580,13 +621,17 @@ class _Viewer:
         self._poll_job = None
         if self._closed:
             return
+        started = time.monotonic()
         try:
             self._poll_updates()
             self._check_stale()
         except Exception as cause:
             self._fail_display(cause)
         if not self._closed and not self._ended:
-            self._poll_job = self.root.after(20, self._poll)
+            # Include rendering time in the period. Sleeping 20 ms after each
+            # render would cap display below 50 fps even on a fast connection.
+            delay = max(1, _DISPLAY_POLL_MS - int((time.monotonic() - started) * 1000))
+            self._poll_job = self.root.after(delay, self._poll)
 
     def _fail_display(self, cause):
         error = RuntimeError("无法显示远程桌面：%s。请关闭窗口后重新连接。" % (str(cause) or cause.__class__.__name__))
@@ -636,6 +681,7 @@ class _Viewer:
     def _show_terminal(self, error):
         self._ended = True
         self._set_resolution_capability(None)
+        self._set_frame_rate_capability(None)
         self._pause_input("连接已终止\n请查看下方提示。")
         self._indicator.itemconfigure(self._dot, fill="#a54a32")
         self._disconnect.configure(text="关闭窗口")
@@ -653,8 +699,12 @@ class _Viewer:
             if state == "capabilities":
                 self._set_resolution_capability(detail)
                 continue
+            if state == "frame_rate_capability":
+                self._set_frame_rate_capability(detail)
+                continue
             if state in ("connecting", "retry"):
                 self._set_resolution_capability(None)
+                self._set_frame_rate_capability(None)
             self._indicator.itemconfigure(self._dot, fill="#84918d")
             if state == "connecting":
                 text = "正在连接远程桌面…" if detail == 1 else "正在重新连接…"
@@ -885,6 +935,7 @@ class _Viewer:
         if self._closed:
             return
         self._closed = True
+        self._frame_timer.close()
         self._worker.cancel()
         try:
             self._clear_local_input()

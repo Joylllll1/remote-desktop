@@ -38,6 +38,9 @@ class PipelineRecoveryTests(unittest.TestCase):
     def test_dropped_v5_connection_restarts_with_idr_and_input(self):
         self.check_reconnect(5)
 
+    def test_dropped_v6_connection_restarts_with_idr_and_input(self):
+        self.check_reconnect(6)
+
     def check_reconnect(self, version):
         sockets, hosts, desktops = [], [], []
         host_errors = []

@@ -59,7 +59,7 @@ def host(self_node, peer, *, panel_input=None):
             with conn, Desktop() as desktop:
                 phase = "桌面传输"
                 print(f"{name} 已连接。", flush=True)
-                serve_stream(conn, desktop, version=5)
+                serve_stream(conn, desktop, version=6)
         except Exception as error:
             if not stopped.is_set() and not cancelled.is_set():
                 print(f"{phase}失败：{error}", file=sys.stderr, flush=True)

@@ -5,15 +5,15 @@
 
 No screen capture, input injection, external host, or user data is used. Both
 codecs see the same elapsed-time motion: tiles sample it at 10 Hz and H.264 at
-30 Hz. Codec trials run without pacing; their FPS measures CPU capacity, not
+30 or 60 Hz. Codec trials run without pacing; their FPS measures CPU capacity, not
 delivered/display FPS. Payload bitrate includes initial frames and every update
 over the same synthetic duration. Fidelity compares each decoded image with its
 own exact source. Codec trials pool every frame over the same elapsed duration,
-with each codec's uniform 10/30 Hz sampling; no IDR phase is overrepresented.
+with each codec's uniform 10/30/60 Hz sampling; no IDR phase is overrepresented.
 RGB error/PSNR is not an OCR or text-legibility measurement; a foreground-only
 colored-text/one-pixel-line metric avoids dilution by the white background.
 
-Optional loopback uses the actual v4/v5 stream and Session through socketpairs,
+Optional loopback uses the actual v4/v5/v6 stream and Session through socketpairs,
 with independent byte-chunk propagation, downstream shaping and bounded queues.
 It is a controlled local simulation, not a real-network result. Its latency is
 synthetic capture start to decoded-image return, not physical input-to-photon.
@@ -25,6 +25,7 @@ from collections import Counter, deque
 from contextlib import redirect_stdout, suppress
 from datetime import datetime, timezone
 import hashlib
+from functools import partial
 from importlib import metadata
 import json
 import math
@@ -48,8 +49,8 @@ from remotedesk.network.tiles import TileDecoder, TileEncoder
 SIZE = (1920, 1080)
 TEXT_ROI = (1250, 166, 1860, 416)
 SCENES = ('static_text', 'scrolling', 'window_drag')
-FPS = {'tiles': 10, 'video': 30}
-PROTOCOLS = {'tiles': 4, 'video': 5}
+FPS = {'tiles': 10, 'video': 30, 'video60': 60}
+PROTOCOLS = {'tiles': 4, 'video': 5, 'video60': 6}
 
 
 def percentile(values, fraction):
@@ -193,7 +194,7 @@ def codec_types(condition):
     if condition == 'tiles':
         return TileEncoder, TileDecoder
     from remotedesk.network.video import VideoDecoder, VideoEncoder
-    return VideoEncoder, VideoDecoder
+    return (partial(VideoEncoder, frame_rate=60) if condition == 'video60' else VideoEncoder), VideoDecoder
 
 
 def codec_trial(condition, scene_name, seconds):
@@ -481,7 +482,7 @@ def environment():
         'created_utc': datetime.now(timezone.utc).isoformat(),
         'python': sys.version, 'platform': platform.platform(), 'cpu_count': os.cpu_count(),
         'packages': versions, 'source_sha256': hashes, 'font': 'Pillow bundled default at 14/17/22 px',
-        'method': 'Equal elapsed-time motion; 10fps tiles vs 30fps video; no real desktop or network.',
+        'method': 'Equal elapsed-time motion; 10fps tiles vs 30/60fps video; no real desktop or network.',
         'memory_bound': 'One source/decoded frame at a time; 8 x 4096-byte proxy chunks per direction; '
                         '16 source timestamps; at most 60 synthetic seconds per trial.',
     }
@@ -490,7 +491,7 @@ def environment():
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--seconds', type=int, default=10, help='synthetic/loopback seconds per scene and codec (1..60)')
-    parser.add_argument('--conditions', nargs='+', choices=tuple(FPS), default=list(FPS))
+    parser.add_argument('--conditions', nargs='+', choices=tuple(FPS), default=['tiles', 'video'])
     parser.add_argument('--scenes', nargs='+', choices=SCENES, default=list(SCENES))
     parser.add_argument('--loopback', action='store_true', help='also run each condition through real v4/v5 stream code')
     parser.add_argument('--loopback-only', action='store_true', help='omit unpaced codec trials')

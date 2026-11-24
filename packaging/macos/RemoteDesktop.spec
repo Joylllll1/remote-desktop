@@ -42,6 +42,6 @@ app = BUNDLE(
         'LSMinimumSystemVersion': '14.0' if platform.machine() == 'arm64' else '11.0',
         'NSScreenCaptureUsageDescription': '共享时采集本机屏幕，发送给已授权的 Tailscale 设备。',
         'CFBundleShortVersionString': '0.1.6',
-        'CFBundleVersion': '10',
+        'CFBundleVersion': '11',
     },
 )

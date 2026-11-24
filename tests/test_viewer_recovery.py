@@ -122,6 +122,9 @@ def fake_view(worker):
     window._indicator = Mock()
     window._disconnect = Mock()
     window._resolution_combo = Mock()
+    window._frame_rate_combo = Mock()
+    window._frame_timer = Mock()
+    window._frame_rate_choice = Mock()
     window._resolution_hint = Mock()
     window._resolution_choice = Mock()
     window._resolution_choice.get.return_value = "清晰 · 1920"

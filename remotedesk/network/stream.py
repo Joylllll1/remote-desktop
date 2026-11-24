@@ -1,6 +1,6 @@
 """Full-duplex input with versioned image updates or H.264 video.
 
-V4/V5 send fresh images/video within a decode-acknowledged window.
+V4+ send fresh images/video within a decode-acknowledged window.
 Older peers retain request/reply framing. Socket mode stays nonblocking so one
 direction cannot change the other's timeout. Capture stays in its owning
 thread; the independent control reader owns input injection and its lease.
@@ -16,11 +16,14 @@ from collections import deque
 from contextlib import suppress
 
 from remotedesk.network.session import MAX_FRAME, MAX_INPUT, check_events
+from remotedesk.network.timing import FrameTimer
+from remotedesk.network.video import validate_frame_rate
 
 READY_V2 = b"remote-desktop/2 ready"
 READY_V3 = b"remote-desktop/3 ready"
 READY = b"remote-desktop/4 ready"
 READY_V5 = b"remote-desktop/5 ready"
+READY_V6 = b"remote-desktop/6 ready"
 BUSY = b"remote-desktop/2 busy"
 INPUT_LEASE = 3.0
 CONTROL_IDLE = 45.0
@@ -29,10 +32,20 @@ TRANSFER_TOTAL = 60.0
 # The byte window includes the packet length and frame envelope. A frame larger
 # than this budget is allowed only as the sole outstanding frame (<= MAX_FRAME).
 MAX_IN_FLIGHT_FRAMES = 3
+# At 60 fps four credits cover a 40 ms RTT plus encoding/decoding without
+# expanding the byte budget. At 30 fps the original three-credit limit applies.
+MAX_IN_FLIGHT_FRAMES_60 = 4
 MAX_IN_FLIGHT_BYTES = 512 * 1024
 FRAME_INTERVAL = 0.1
-VIDEO_FRAME_INTERVAL = 1 / 30
 FRAME_HEADER = struct.Struct("!QH")  # sequence, requested resolution profile
+
+
+def _next_capture_deadline(previous, started, interval):
+    # Keep normal timer overshoot from accumulating into a lower frame rate.
+    # After real backpressure, reset instead of bursting to catch up old slots.
+    if previous <= 0 or started - previous >= interval:
+        return started + interval
+    return previous + interval
 
 
 def _wait(sock, writing, timeout):
@@ -132,6 +145,7 @@ class StreamClient:
             from remotedesk.network.video import decoder_available
             self._video_requested = decoder_available()
         self._width = 1920
+        self._frame_rate = 60 if version >= 6 else 30
         self._started = False
         self._received_sequence = 0
 
@@ -143,6 +157,16 @@ class StreamClient:
             self._width = width
             if self.version >= 4 and self._started and changed:
                 self._write_command({"events": [], "frame": False, "width": width})
+
+    def set_frame_rate(self, frame_rate):
+        frame_rate = validate_frame_rate(frame_rate)
+        if self.version < 6:
+            raise RuntimeError("请升级共享端以选择视频帧率。")
+        with self._writer:
+            changed = self._frame_rate != frame_rate
+            self._frame_rate = frame_rate
+            if self._started and changed:
+                self._write_command({"events": [], "frame": False, "fps": frame_rate})
 
     def _write_command(self, command):
         if self._closed.is_set():
@@ -158,6 +182,8 @@ class StreamClient:
                 command["width"] = self._width
             if self.version >= 5 and frame and not self._started:
                 command["codec"] = "h264" if self._video_requested else "tiles"
+            if self.version >= 6 and frame and not self._started:
+                command["fps"] = self._frame_rate
             if ack is not None:
                 command["ack"] = ack
             self._write_command(command)
@@ -258,7 +284,8 @@ def serve_stream(conn, desktop, *, version=4):
     if version >= 3 and not callable(getattr(desktop, "capture_image", None)):
         raise RuntimeError("共享端缺少新版屏幕采集组件，请重新安装完整版本。")
     _configure(conn)
-    greeting = READY_V5 if version >= 5 else READY if version >= 4 else READY_V3 if version >= 3 else READY_V2
+    greeting = (READY_V6 if version >= 6 else READY_V5 if version >= 5 else
+                READY if version >= 4 else READY_V3 if version >= 3 else READY_V2)
     write_packet(conn, greeting, 128, idle=12, total=12)
     if version < 3 and hasattr(desktop, "reset_stream"):
         desktop.reset_stream(minimum_width=1280)
@@ -270,6 +297,7 @@ def serve_stream(conn, desktop, *, version=4):
     request_lock = threading.Condition()
     streaming = False
     requested_codec = "tiles"
+    requested_frame_rate = 60 if version >= 6 else 30
     outstanding = deque()
     outstanding_bytes = 0
     last_sequence = last_ack = 0
@@ -281,7 +309,7 @@ def serve_stream(conn, desktop, *, version=4):
             print("控制心跳延迟，已释放按键和鼠标；继续等待连接恢复。", flush=True)
 
     def controls():
-        nonlocal last_command, requested_width, streaming, outstanding_bytes, last_ack, requested_codec
+        nonlocal last_command, requested_width, streaming, outstanding_bytes, last_ack, requested_codec, requested_frame_rate
         try:
             while not stopped.is_set():
                 raw = read_packet(conn, MAX_INPUT, idle=CONTROL_IDLE, total=CONTROL_IDLE,
@@ -290,6 +318,8 @@ def serve_stream(conn, desktop, *, version=4):
                 allowed = {"events", "frame", "width", "ack"} if version >= 4 else {"events", "frame", "width"}
                 if version >= 5:
                     allowed.add("codec")
+                if version >= 6:
+                    allowed.add("fps")
                 if (type(command) is not dict or not {"events", "frame"} <= set(command)
                         or not set(command) <= allowed or type(command["frame"]) is not bool):
                     raise ValueError("控制指令格式无效。")
@@ -301,6 +331,8 @@ def serve_stream(conn, desktop, *, version=4):
                 if (type(width) is not int or width not in (1280, 1920)
                         or ("width" in command and (version < 3 or (version < 4 and not command["frame"])))):
                     raise ValueError("画面宽度指令无效。")
+                if "fps" in command:
+                    validate_frame_rate(command["fps"])
                 check_events(command["events"])
                 if "ack" in command:
                     with request_lock:
@@ -316,6 +348,8 @@ def serve_stream(conn, desktop, *, version=4):
                     if version >= 4:
                         if "width" in command:
                             requested_width = width
+                        if "fps" in command:
+                            requested_frame_rate = command["fps"]
                         streaming = streaming or command["frame"]
                         request_lock.notify_all()
                     elif command["frame"]:
@@ -338,6 +372,7 @@ def serve_stream(conn, desktop, *, version=4):
     if version >= 3:
         from remotedesk.network.tiles import TileEncoder
         encoder = TileEncoder()
+    frame_timer = FrameTimer()
     reader.start()
     previous = None
     phase = "等待画面请求"
@@ -352,7 +387,10 @@ def serve_stream(conn, desktop, *, version=4):
             if version >= 4:
                 with request_lock:
                     while not stopped.is_set():
-                        available = (streaming and len(outstanding) < MAX_IN_FLIGHT_FRAMES
+                        frame_timer.set_rate(requested_frame_rate if video else 30)
+                        frame_limit = (MAX_IN_FLIGHT_FRAMES_60 if video and requested_frame_rate == 60
+                                       else MAX_IN_FLIGHT_FRAMES)
+                        available = (streaming and len(outstanding) < frame_limit
                                      and outstanding_bytes < MAX_IN_FLIGHT_BYTES
                                      and (not drain_window or not outstanding))
                         delay = next_capture - time.monotonic()
@@ -367,6 +405,7 @@ def serve_stream(conn, desktop, *, version=4):
                     pass
                 with request_lock:
                     width = requested_width
+                    frame_rate = requested_frame_rate
                     if not outstanding:
                         drain_window = False
             else:
@@ -375,6 +414,7 @@ def serve_stream(conn, desktop, *, version=4):
                 with request_lock:
                     requested.clear()
                     width = requested_width
+                    frame_rate = requested_frame_rate
             if stopped.is_set():
                 break
             if version >= 5 and not codec_selected:
@@ -382,14 +422,18 @@ def serve_stream(conn, desktop, *, version=4):
                     from remotedesk.network.video import VideoEncoder, encoder_available
                     if encoder_available():
                         encoder.close()
-                        encoder = VideoEncoder()
+                        encoder = VideoEncoder(frame_rate=frame_rate)
                         video = True
                 codec_selected = True
-                print("画面传输：H.264 4:4:4，最高 30 帧/秒，保留所选分辨率。" if video else
+                print(f"画面传输：H.264 4:4:4，最高 {frame_rate} 帧/秒，保留所选分辨率。" if video else
                       "画面传输：图片兼容模式，最高 10 帧/秒。", flush=True)
+            if video:
+                encoder.set_frame_rate(frame_rate)
+            frame_timer.set_rate(frame_rate if video else 30)
             phase = "采集桌面"
             started = time.monotonic()
-            next_capture = started + (VIDEO_FRAME_INTERVAL if video else FRAME_INTERVAL)
+            interval = 1 / frame_rate if video else FRAME_INTERVAL
+            next_capture = _next_capture_deadline(next_capture, started, interval)
             if encoder is not None:
                 with desktop.capture_image(max_width=width) as frame:
                     payload = encoder.encode(frame)
@@ -400,7 +444,13 @@ def serve_stream(conn, desktop, *, version=4):
             if version >= 4:
                 wire_size = 4 + FRAME_HEADER.size + len(payload)
                 with request_lock:
-                    if outstanding and outstanding_bytes + wire_size > MAX_IN_FLIGHT_BYTES:
+                    frame_limit = (MAX_IN_FLIGHT_FRAMES_60 if video and requested_frame_rate == 60
+                                   else MAX_IN_FLIGHT_FRAMES)
+                    if len(outstanding) >= frame_limit:
+                        # The reader can lower 60 -> 30 while capture/encoding
+                        # is running. Do not reserve a fourth frame afterward.
+                        sequence = None
+                    elif outstanding and outstanding_bytes + wire_size > MAX_IN_FLIGHT_BYTES:
                         drain_window = True
                         sequence = None
                     else:
@@ -448,6 +498,7 @@ def serve_stream(conn, desktop, *, version=4):
     except Exception as error:
         raise RuntimeError(f"{phase}失败：{error}") from error
     finally:
+        frame_timer.close()
         stopped.set()
         with request_lock:
             request_lock.notify_all()

@@ -39,6 +39,12 @@ def _bitrate(value):
     return value
 
 
+def validate_frame_rate(value):
+    if type(value) is not int or value not in (30, 60):
+        raise ValueError('桌面视频帧率须为 30 或 60。')
+    return value
+
+
 def _av():
     try:
         import av
@@ -47,16 +53,16 @@ def _av():
     return av
 
 
-def _new_encoder(size, max_bitrate):
+def _new_encoder(size, max_bitrate, frame_rate):
     context = _av().CodecContext.create('libx264', 'w')
     context.width, context.height = size
     context.pix_fmt = 'yuv444p'
-    context.time_base = Fraction(1, FPS)
-    context.framerate = Fraction(FPS, 1)
+    context.time_base = Fraction(1, frame_rate)
+    context.framerate = Fraction(frame_rate, 1)
     context.thread_count = 2
     context.thread_type = 'SLICE'
     context.max_b_frames = 0
-    context.gop_size = FPS * 2
+    context.gop_size = frame_rate * 2
     rate_kbps = max_bitrate // 1000
     context.options = {
         'preset': 'veryfast',
@@ -64,7 +70,7 @@ def _new_encoder(size, max_bitrate):
         'crf': '18',
         'x264-params': (
             'bframes=0:rc-lookahead=0:sync-lookahead=0:repeat-headers=1:'
-            'annexb=1:ref=1:keyint=60:min-keyint=60:scenecut=0:'
+            f'annexb=1:ref=1:keyint={frame_rate * 2}:min-keyint={frame_rate * 2}:scenecut=0:'
             f'vbv-maxrate={rate_kbps}:vbv-bufsize={max(1, rate_kbps // 10)}'
         ),
     }
@@ -111,8 +117,9 @@ def decoder_available():
 
 
 class VideoEncoder:
-    def __init__(self, *, max_bitrate=DEFAULT_MAX_BITRATE):
+    def __init__(self, *, max_bitrate=DEFAULT_MAX_BITRATE, frame_rate=FPS):
         self._max_bitrate = _bitrate(max_bitrate)
+        self._frame_rate = validate_frame_rate(frame_rate)
         self._codec = None
         self._size = None
         self._frame_index = 0
@@ -131,6 +138,13 @@ class VideoEncoder:
             self.close()
             self._max_bitrate = max_bitrate
 
+    def set_frame_rate(self, frame_rate):
+        """Reset timing and references; the next frame is a self-contained IDR."""
+        frame_rate = validate_frame_rate(frame_rate)
+        if frame_rate != self._frame_rate:
+            self.close()
+            self._frame_rate = frame_rate
+
     def encode(self, image):
         if not isinstance(image, Image.Image) or image.mode != 'RGB':
             raise ValueError('桌面编码需要 RGB 图像。')
@@ -140,11 +154,11 @@ class VideoEncoder:
         try:
             av = _av()
             if self._codec is None:
-                self._codec = _new_encoder(size, self._max_bitrate)
+                self._codec = _new_encoder(size, self._max_bitrate, self._frame_rate)
                 self._size = size
             frame = av.VideoFrame.from_image(image)
             frame.pts = self._frame_index
-            frame.time_base = Fraction(1, FPS)
+            frame.time_base = Fraction(1, self._frame_rate)
             packets = self._codec.encode(frame)
             if len(packets) != 1:
                 raise RuntimeError('H.264 编码组件未立即返回完整画面。')

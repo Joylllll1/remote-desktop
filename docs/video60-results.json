@@ -1,0 +1,188 @@
+{
+  "environment": {
+    "created_utc": "2026-11-24T10:37:14.835932+00:00",
+    "python": "3.12.14 (main, Aug 25 2026, 13:50:33) [Clang 22.1.3 ]",
+    "platform": "macOS-26.5.2-arm64-arm-64bit",
+    "cpu_count": 10,
+    "packages": {
+      "Pillow": "13.0.0",
+      "av": "16.1.0"
+    },
+    "source_sha256": {
+      "tools/benchmark_video.py": "712ca6f5142e9b0bc154d4b591b2295163d78c45c5f470c4f23ac25195e958c6",
+      "remotedesk/network/tiles.py": "8c94e4eaf351830014f501d2f08be2a783e8d2ba5332709d95415f609ea71d95",
+      "remotedesk/network/video.py": "7d4368aa5d1e22c20bdfd0fe35e56127193fc27264c15302ae9e832e3f93557b",
+      "remotedesk/network/stream.py": "62be687429446404a98ff6d9187b0599b4d6ee174ea3140ffee855f69f3df1ff",
+      "remotedesk/network/session.py": "75236004d05fccb98b49c3d21005311a1a5f6f94dc863a03197bfb5f6ff86d15"
+    },
+    "font": "Pillow bundled default at 14/17/22 px",
+    "method": "Equal elapsed-time motion; 10fps tiles vs 30/60fps video; no real desktop or network.",
+    "memory_bound": "One source/decoded frame at a time; 8 x 4096-byte proxy chunks per direction; 16 source timestamps; at most 60 synthetic seconds per trial."
+  },
+  "settings": {
+    "seconds": 10,
+    "conditions": [
+      "video60"
+    ],
+    "scenes": [
+      "scrolling",
+      "window_drag"
+    ],
+    "loopback": false,
+    "loopback_only": true,
+    "rtt_ms": 40,
+    "mbps": 8
+  },
+  "results": [
+    {
+      "kind": "shaped_loopback",
+      "condition": "video60",
+      "scene": "scrolling",
+      "protocol": 6,
+      "resolution": [
+        1920,
+        1080
+      ],
+      "target_fps": 60,
+      "rtt_ms": 40,
+      "downstream_limit_mbps": 8,
+      "upstream_bandwidth": "unlimited",
+      "requested_after_first_frame_s": 10,
+      "measured_after_first_frame_s": 10.0164,
+      "transport_elapsed_s": 10.3545,
+      "decoded_frames": 568,
+      "decoded_fps": 56.607,
+      "first_frame_ms": 333.261,
+      "capture_to_decoded": {
+        "mean_ms": 41.433,
+        "p50_ms": 37.875,
+        "p95_ms": 64.961,
+        "max_ms": 143.299
+      },
+      "last_capture_age_ms": 38.945,
+      "max_frame_gap_ms": 122.584,
+      "input_events_received": 50,
+      "synthetic_input_to_host": {
+        "mean_ms": 22.046,
+        "p50_ms": 21.806,
+        "p95_ms": 25.162,
+        "max_ms": 25.238
+      },
+      "downstream_bytes": 2002569,
+      "upstream_bytes": 31586,
+      "downstream_mbps": 1.54721,
+      "downstream_progress_events": 815,
+      "max_downstream_progress_gap_ms": 209.316,
+      "first_downstream_byte_ms": 26.05,
+      "host_frame_payload_bytes_started": 1998062,
+      "fidelity_sampling": "Approximately 1Hz source-matched samples; QA work is included in loopback wall times.",
+      "fidelity": {
+        "sample_count": 11,
+        "first_sample_source_s": 0.189963,
+        "last_sample_source_s": 10.310693,
+        "sample_source_seconds_preview": [
+          0.189963,
+          1.305889,
+          2.305899,
+          3.30934,
+          4.309083,
+          6.295197,
+          7.299206,
+          8.295472,
+          9.310184,
+          10.310693
+        ],
+        "full_rgb": {
+          "mae_0_255": 0.72096,
+          "psnr_db": 40.004,
+          "exact": false,
+          "channel_samples": 68428800
+        },
+        "colored_text_and_lines_foreground_rgb": {
+          "mae_0_255": 7.80645,
+          "psnr_db": 26.8805,
+          "exact": false,
+          "channel_samples": 341748
+        },
+        "note": "PSNR null with exact=true means zero error; these are RGB fidelity metrics, not OCR."
+      },
+      "errors": [],
+      "leaked_threads": []
+    },
+    {
+      "kind": "shaped_loopback",
+      "condition": "video60",
+      "scene": "window_drag",
+      "protocol": 6,
+      "resolution": [
+        1920,
+        1080
+      ],
+      "target_fps": 60,
+      "rtt_ms": 40,
+      "downstream_limit_mbps": 8,
+      "upstream_bandwidth": "unlimited",
+      "requested_after_first_frame_s": 10,
+      "measured_after_first_frame_s": 10.011,
+      "transport_elapsed_s": 10.1875,
+      "decoded_frames": 568,
+      "decoded_fps": 56.638,
+      "first_frame_ms": 171.356,
+      "capture_to_decoded": {
+        "mean_ms": 40.923,
+        "p50_ms": 37.406,
+        "p95_ms": 65.856,
+        "max_ms": 154.821
+      },
+      "last_capture_age_ms": 37.779,
+      "max_frame_gap_ms": 135.834,
+      "input_events_received": 50,
+      "synthetic_input_to_host": {
+        "mean_ms": 22.106,
+        "p50_ms": 21.849,
+        "p95_ms": 25.158,
+        "max_ms": 25.174
+      },
+      "downstream_bytes": 1844934,
+      "upstream_bytes": 31539,
+      "downstream_mbps": 1.44879,
+      "downstream_progress_events": 816,
+      "max_downstream_progress_gap_ms": 66.986,
+      "first_downstream_byte_ms": 25.438,
+      "host_frame_payload_bytes_started": 1839403,
+      "fidelity_sampling": "Approximately 1Hz source-matched samples; QA work is included in loopback wall times.",
+      "fidelity": {
+        "sample_count": 11,
+        "first_sample_source_s": 0.050758,
+        "last_sample_source_s": 10.144598,
+        "sample_source_seconds_preview": [
+          0.050758,
+          1.1488,
+          2.14839,
+          3.150093,
+          4.150993,
+          6.148966,
+          7.14695,
+          8.146485,
+          9.144835,
+          10.144598
+        ],
+        "full_rgb": {
+          "mae_0_255": 0.87878,
+          "psnr_db": 39.2922,
+          "exact": false,
+          "channel_samples": 68428800
+        },
+        "colored_text_and_lines_foreground_rgb": {
+          "mae_0_255": 7.49472,
+          "psnr_db": 27.0622,
+          "exact": false,
+          "channel_samples": 341748
+        },
+        "note": "PSNR null with exact=true means zero error; these are RGB fidelity metrics, not OCR."
+      },
+      "errors": [],
+      "leaked_threads": []
+    }
+  ]
+}

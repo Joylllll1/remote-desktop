@@ -4,6 +4,7 @@ import io
 import random
 import struct
 import unittest
+from fractions import Fraction
 from unittest.mock import patch
 
 from PIL import Image, ImageDraw, ImageFont
@@ -141,6 +142,11 @@ class VideoBoundsTests(unittest.TestCase):
         for rate in (True, None, 0, 255_999, 32_000_001, 8_000_000.0):
             with self.subTest(rate=rate), self.assertRaises(ValueError):
                 VideoEncoder(max_bitrate=rate)
+        for rate in (True, False, None, 0, 29, 31, 59, 61, 60.0, '60'):
+            with self.subTest(frame_rate=rate), self.assertRaises(ValueError):
+                VideoEncoder(frame_rate=rate)
+            with self.subTest(frame_rate=rate), self.assertRaises(ValueError):
+                VideoEncoder().set_frame_rate(rate)
 
 
 @unittest.skipUnless(video.encoder_available() and video.decoder_available(), 'PyAV H.264 wheel not installed')
@@ -179,18 +185,21 @@ class VideoCodecTests(unittest.TestCase):
             for index, color in enumerate(('#d62228', '#1354d4', '#16803b')):
                 draw.text((20, 20 + index * 22), 'Small 13px text: abcdef 0123456789', fill=color, font=font)
                 draw.line((420 + index * 8, 20, 420 + index * 8, 110), fill=color, width=1)
-            _, result = self.encode_decode(image)
-            foreground = [
-                abs(actual - expected)
-                for original, decoded in zip(rgb_pixels(image), rgb_pixels(result))
-                if original != (249, 250, 251)
-                for expected, actual in zip(original, decoded)
-            ]
-            self.assertLess(sum(foreground) / len(foreground), 9)
-            for index in range(3):
-                expected = image.getpixel((420 + index * 8, 70))
-                actual = result.getpixel((420 + index * 8, 70))
-                self.assertLess(max(abs(a - b) for a, b in zip(expected, actual)), 18)
+            for frame_rate in (30, 60):
+                with self.subTest(frame_rate=frame_rate):
+                    self.encoder.set_frame_rate(frame_rate)
+                    _, result = self.encode_decode(image)
+                    foreground = [
+                        abs(actual - expected)
+                        for original, decoded in zip(rgb_pixels(image), rgb_pixels(result))
+                        if original != (249, 250, 251)
+                        for expected, actual in zip(original, decoded)
+                    ]
+                    self.assertLess(sum(foreground) / len(foreground), 9)
+                    for index in range(3):
+                        expected = image.getpixel((420 + index * 8, 70))
+                        actual = result.getpixel((420 + index * 8, 70))
+                        self.assertLess(max(abs(a - b) for a, b in zip(expected, actual)), 18)
 
     def test_scrolling_interframes_are_significantly_smaller_than_full_jpegs(self):
         with Image.new('RGB', (960, 1000), '#f5f7fb') as canvas:
@@ -237,6 +246,35 @@ class VideoCodecTests(unittest.TestCase):
             self.decoder.close()
             with self.decoder.decode(payload) as restarted:
                 self.assertEqual(restarted.size, image.size)
+
+    def test_frame_rate_switch_resets_timing_and_delivers_idr_then_immediate_p_frame(self):
+        with Image.new('RGB', (321, 181), '#3475a2') as image:
+            self.encode_decode(image)
+            for frame_rate in (60, 30, 60):
+                self.encoder.set_frame_rate(frame_rate)
+                keyframe = self.encoder.encode(image)
+                self.assertTrue(keyframe[2] & 1)
+                self.assertEqual(self.encoder._codec.time_base, Fraction(1, frame_rate))
+                self.assertEqual(self.encoder._codec.framerate, Fraction(frame_rate, 1))
+                self.assertEqual(self.encoder._codec.gop_size, frame_rate * 2)
+                # An existing decoder and one joining at the changed rate both
+                # consume the new SPS/PPS/IDR followed by its P frame immediately.
+                fresh = VideoDecoder()
+                try:
+                    for decoder in (self.decoder, fresh):
+                        with decoder.decode(keyframe) as result:
+                            self.assertEqual(result.size, image.size)
+                    self.encoder.set_frame_rate(frame_rate)
+                    for invalid in (True, 60.0, 24):
+                        with self.assertRaises(ValueError):
+                            self.encoder.set_frame_rate(invalid)
+                    interframe = self.encoder.encode(image)
+                    self.assertFalse(interframe[2] & 1)
+                    for decoder in (self.decoder, fresh):
+                        with decoder.decode(interframe) as result:
+                            self.assertEqual(result.size, image.size)
+                finally:
+                    fresh.close()
 
     def test_decoder_requires_new_keyframe_after_close_and_rejects_dimension_lies(self):
         with Image.new('RGB', (321, 181), '#236d9c') as image:
@@ -308,16 +346,20 @@ class VideoCodecTests(unittest.TestCase):
 
     def test_periodic_idrs_and_high_entropy_frames_remain_bounded(self):
         rng = random.Random(19)
-        total = 0
-        for index in range(65):
-            with Image.frombytes('RGB', (320, 180), rng.randbytes(320 * 180 * 3)) as image:
-                payload, result = self.encode_decode(image)
-                self.assertLessEqual(len(payload), video.MAX_FRAME)
-                self.assertEqual(bool(payload[2] & 1), index in (0, 60))
-                self.assertEqual(result.size, image.size)
-                total += len(payload)
-        # VBV permits a short initial burst, then caps aggregate encoded data.
-        self.assertLess(total, 8_000_000 / 8 * (65 / video.FPS + 0.2))
+        for frame_rate in (30, 60):
+            self.encoder.set_frame_rate(frame_rate)
+            self.encoder.close()
+            total = 0
+            frame_count = frame_rate * 2 + 5
+            for index in range(frame_count):
+                with Image.frombytes('RGB', (320, 180), rng.randbytes(320 * 180 * 3)) as image:
+                    payload, result = self.encode_decode(image)
+                    self.assertLessEqual(len(payload), video.MAX_FRAME)
+                    self.assertEqual(bool(payload[2] & 1), index in (0, frame_rate * 2))
+                    self.assertEqual(result.size, image.size)
+                    total += len(payload)
+            # VBV permits a short initial burst, then caps aggregate encoded data.
+            self.assertLess(total, 8_000_000 / 8 * (frame_count / frame_rate + 0.2))
 
 
 if __name__ == '__main__':
