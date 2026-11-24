@@ -75,12 +75,28 @@ def _key_name(event):
     return _SYMBOL_KEYS.get(keysym)
 
 
+def _key_identity(event):
+    """Match key-up to key-down even when modifiers change on macOS.
+
+    Aqua Tk 8.6/9 packs (virtual << 24) | (option_shift << 22) |
+    character into %k. In particular, Shift's own release has a different
+    %k from its press. Only the high byte identifies the physical key.
+    """
+    if sys.platform == "darwin":
+        virtual = (event.keycode >> 24) & 0xff
+        if virtual < 0x80:  # Higher values represent synthetic/IME text.
+            return ("mac", virtual)
+        return ("text", event.keysym)
+    return event.keycode
+
+
 class _InputBuffer:
     """Coalesce motion; an explicit release cancels stale pending input."""
 
     def __init__(self, enabled=True):
         self._events = deque()
         self._lock = threading.Lock()
+        self._changed = threading.Condition(self._lock)
         self._enabled = enabled
         self._epoch = None
 
@@ -93,6 +109,7 @@ class _InputBuffer:
         with self._lock:
             self._epoch, self._enabled = epoch, False
             self._events.clear()
+            self._changed.notify_all()
 
     def disable(self):
         self.begin(None)
@@ -106,6 +123,7 @@ class _InputBuffer:
             self._events.clear()
             if self._epoch is not None:
                 self._events.append({"type": "release"})
+            self._changed.notify_all()
             return True
 
     def matches(self, epoch):
@@ -131,12 +149,19 @@ class _InputBuffer:
                 self._events[-1] = event
             else:
                 self._events.append(event)
+            self._changed.notify_all()
 
     def take(self, epoch=None):
         with self._lock:
             if epoch is not None and self._epoch != epoch:
                 return []
             return [self._events.popleft() for _ in range(min(128, len(self._events)))]
+
+    def wait(self, epoch, timeout):
+        """Wake for pending input or a new session, including before we wait."""
+        with self._changed:
+            self._changed.wait_for(
+                lambda: bool(self._events) or self._epoch != epoch, timeout)
 
 
 class _RecoveryWorker(threading.Thread):
@@ -251,6 +276,7 @@ class _RecoveryWorker(threading.Thread):
             frame.close()
 
     def _send_inputs(self, session, epoch, stopped, errors):
+        heartbeat_at = time.monotonic()
         try:
             while not stopped.is_set() and not self._cancelled.is_set():
                 if not self.inputs.matches(epoch):
@@ -259,8 +285,10 @@ class _RecoveryWorker(threading.Thread):
                 events = self.inputs.take(epoch)
                 if stopped.is_set() or self._cancelled.is_set():
                     return
-                session.send_input(events)
-                stopped.wait(0.05)
+                if events or time.monotonic() >= heartbeat_at:
+                    session.send_input(events)
+                    heartbeat_at = time.monotonic() + 0.05
+                self.inputs.wait(epoch, max(0, heartbeat_at - time.monotonic()))
         except Exception as error:
             if not stopped.is_set() and not self._cancelled.is_set():
                 errors.put_nowait(error)
@@ -326,7 +354,8 @@ class _RecoveryWorker(threading.Thread):
                 if resolution_control:
                     self._apply_resolution(session)
                 self.states.put(("capabilities", resolution_control))
-                if getattr(session, "supports_continuous_frames", False):
+                continuous_frames = bool(getattr(session, "supports_continuous_frames", False))
+                if continuous_frames:
                     _lifecycle("已启用连续画面传输（协议 v4），限制在途画面以避免积压。")
                 else:
                     _lifecycle("共享端使用逐帧请求传输；高延迟下刷新率受网络往返限制。")
@@ -360,7 +389,8 @@ class _RecoveryWorker(threading.Thread):
                     finally:
                         if frame is not None:
                             frame.close()
-                    self._cancelled.wait(max(0, 0.1 - (time.monotonic() - started)))
+                    if not continuous_frames:
+                        self._cancelled.wait(max(0, 0.1 - (time.monotonic() - started)))
             except Exception as error:
                 caught = error
             finally:
@@ -768,7 +798,7 @@ class _Viewer:
     def _key_press(self, event):
         if self._closed or self._ended or self._image_rect is None or not self._input.ready:
             return "break"
-        identity = event.keycode
+        identity = _key_identity(event)
         self._flush_key_releases(except_identity=identity)
         pending = self._key_release_jobs.pop(identity, None)
         if pending is not None:
@@ -786,7 +816,7 @@ class _Viewer:
         return "break"
 
     def _key_release(self, event):
-        identity = event.keycode
+        identity = _key_identity(event)
         if identity in self._keys_down and identity not in self._key_release_jobs:
             if self._keys_down[identity] in _MODIFIER_KEYS:
                 self._flush_key_releases()

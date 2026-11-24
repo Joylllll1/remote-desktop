@@ -493,7 +493,7 @@ class ViewerRecoveryTests(TestCase):
             worker.inputs.append(event)
         wait_until(lambda: sum(len(batch) for _, batch in session.sent) >= 300)
         batches = [batch for _, batch in session.sent if batch]
-        self.assertEqual([len(batch) for batch in batches], [128, 128, 44])
+        self.assertTrue(all(0 < len(batch) <= 128 for batch in batches))
         self.assertEqual([event for batch in batches for event in batch], expected)
 
     def test_sender_watchdog_releases_without_tk_callbacks_and_resumes_only_after_shown(self):
