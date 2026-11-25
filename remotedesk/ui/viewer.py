@@ -14,7 +14,7 @@ _SPECIAL_KEYS = {
     "Control_L": "ctrl_l", "Control_R": "ctrl_r",
     "Shift_L": "shift_l", "Shift_R": "shift_r",
     "Meta_L": "cmd_l", "Meta_R": "cmd_r",
-    "Super_L": "cmd_l", "Super_R": "cmd_r", "Command": "cmd",
+    "Super_L": "cmd_l", "Super_R": "cmd_r", "Win_L": "cmd_l", "Win_R": "cmd_r", "Command": "cmd",
     "BackSpace": "backspace", "Tab": "tab", "ISO_Left_Tab": "tab",
     "Return": "enter", "KP_Enter": "enter", "Escape": "esc",
     "Delete": "delete", "KP_Delete": "delete", "Insert": "insert",
@@ -519,6 +519,21 @@ class _Viewer:
             values=tuple(_FRAME_RATES), state="disabled", width=14)
         self._frame_rate_combo.pack(side="left", padx=(0, 10))
         self._frame_rate_combo.bind("<<ComboboxSelected>>", self._frame_rate_changed)
+        self._shortcut_button = ttk.Menubutton(quality_bar, text="快捷键", state="disabled")
+        shortcut_menu = tk.Menu(self._shortcut_button, tearoff=0)
+        for label, keys in (
+            ("切换中英文（Mac）", ("caps_lock",)),
+            ("切换应用（⌘Tab）", ("cmd_l", "tab")),
+            ("调度中心（⌃↑）", ("ctrl_l", "up")),
+            ("左移桌面（⌃←）", ("ctrl_l", "left")),
+            ("右移桌面（⌃→）", ("ctrl_l", "right")),
+            ("切换全屏（⌃⌘F）", ("ctrl_l", "cmd_l", "f")),
+        ):
+            shortcut_menu.add_command(label=label, command=lambda seq=keys: self._send_shortcut(seq))
+        shortcut_menu.add_separator()
+        shortcut_menu.add_command(label="释放所有按键", command=self._release_all)
+        self._shortcut_button.configure(menu=shortcut_menu)
+        self._shortcut_button.pack(side="left", padx=(0, 10))
         self._resolution_hint = tk.StringVar(value="连接后可选择画质")
         hint = tk.Label(quality_bar, textvariable=self._resolution_hint, anchor="w", justify="left",
                         bg="#f7faf9", fg="#536d65")
@@ -657,6 +672,7 @@ class _Viewer:
             self.close()
 
     def _pause_input(self, message):
+        self._set_shortcut_enabled(False)
         self._clear_local_input()
         self._image_rect = None
         if self._rendered_frame is None:
@@ -693,10 +709,25 @@ class _Viewer:
             self.status.set(text)
         return True
 
+    def _set_shortcut_enabled(self, enabled):
+        if hasattr(self, "_shortcut_button"):
+            self._shortcut_button.configure(state="normal" if enabled else "disabled")
+
+    def _send_shortcut(self, keys):
+        if self._closed or self._ended or self._image_rect is None or not self._input.ready:
+            return
+        self._flush_key_releases()
+        for name in keys:
+            self._input.append({"type": "key", "key": name, "down": True})
+        for name in reversed(keys):
+            self._input.append({"type": "key", "key": name, "down": False})
+        self.canvas.focus_set()
+
     def _show_terminal(self, error):
         self._ended = True
         self._set_resolution_capability(None)
         self._set_frame_rate_capability(None)
+        self._set_shortcut_enabled(False)
         self._pause_input("连接已终止\n请查看下方提示。")
         self._indicator.itemconfigure(self._dot, fill="#a54a32")
         self._disconnect.configure(text="关闭窗口")
@@ -720,6 +751,7 @@ class _Viewer:
             if state in ("connecting", "retry"):
                 self._set_resolution_capability(None)
                 self._set_frame_rate_capability(None)
+                self._set_shortcut_enabled(False)
             self._indicator.itemconfigure(self._dot, fill="#84918d")
             if state == "connecting":
                 text = "正在连接远程桌面…" if detail == 1 else "正在重新连接…"
@@ -746,6 +778,7 @@ class _Viewer:
         self._last_rendered_at = time.monotonic()
         self._stale = False
         if self._worker.frame_shown(epoch):
+            self._set_shortcut_enabled(True)
             self._indicator.itemconfigure(self._dot, fill="#11645a")
             self._update_status()
             if was_stale:
@@ -805,10 +838,18 @@ class _Viewer:
         self.canvas.itemconfigure(self._message_background, state="hidden")
         self._image_rect = (left, top, *size)
 
+    def _canvas_focused(self):
+        try:
+            return self.canvas.focus_get() == self.canvas
+        except KeyError:
+            # ttk.Combobox popdown is an internal Tcl widget absent from
+            # Python's widget map, so Tkinter's focus_get() raises KeyError.
+            return False
+
     def _update_status(self):
         if self._closed or self._ended or self._check_stale() or self._frame is None or not self._input.ready:
             return
-        hint = "键鼠控制中" if self.canvas.focus_get() == self.canvas else "点击画面控制"
+        hint = "键鼠控制中" if self._canvas_focused() else "点击画面控制"
         text = "已连接   ·   %s   ·   %d × %d" % (hint, self._frame.width, self._frame.height)
         media_format, fps = self._worker.display_stats
         text += "   ·   %s   ·   %.0f 帧/秒" % (media_format, fps)
@@ -833,7 +874,7 @@ class _Viewer:
         }
 
     def _mouse_move(self, event):
-        if self.canvas.focus_get() != self.canvas and not self._buttons_down:
+        if not self._canvas_focused() and not self._buttons_down:
             return "break"
         position = self._position(event, clamp=bool(self._buttons_down))
         if position is not None:

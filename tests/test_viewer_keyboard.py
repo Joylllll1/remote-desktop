@@ -149,6 +149,103 @@ class KeyboardTests(unittest.TestCase):
             with patch.object(viewer.sys, "platform", platform):
                 self.assertEqual(viewer._key_identity(SimpleNamespace(keycode=65)), 65)
 
+    def test_windows_win_keys_map_to_command_and_shortcut_menu_sends_balanced_keys(self):
+        with patch.object(viewer.sys, "platform", "win32"):
+            self.assertEqual(viewer._key_name(SimpleNamespace(keysym="Win_L", char="")), "cmd_l")
+            self.assertEqual(viewer._key_name(SimpleNamespace(keysym="Win_R", char="")), "cmd_r")
+        self.view.canvas = Mock()
+        self.view._send_shortcut(("ctrl_l", "left"))
+        self.assertEqual(self.sent(), [
+            ("ctrl_l", True), ("left", True), ("left", False), ("ctrl_l", False),
+        ])
+        self.view.canvas.focus_set.assert_called_once_with()
+
+    def test_mac_keyboard_sets_flags_changed_arrow_flags_and_cycles_ime_on_caps_lock(self):
+        from remotedesk.host.desktop import _MacKeyboard
+
+        class FakeKeyCode:
+            def __init__(self, vk):
+                self.vk = vk
+
+        class FakeKey:
+            pass
+
+        vks = {
+            "cmd": 55, "cmd_l": 55, "cmd_r": 54,
+            "ctrl": 59, "ctrl_l": 59, "ctrl_r": 62,
+            "alt": 58, "alt_l": 58, "alt_r": 61, "alt_gr": 61,
+            "shift": 56, "shift_l": 56, "shift_r": 60,
+            "caps_lock": 57, "left": 123, "f5": 96, "tab": 48,
+        }
+        for name, vk in vks.items():
+            item = FakeKey()
+            item.value = FakeKeyCode(vk)
+            setattr(FakeKey, name, item)
+
+        posted = []
+
+        class FakeQuartz:
+            kCGHIDEventTap = 0
+            kCGEventFlagsChanged = 12
+            kCGEventFlagMaskCommand = 0x100000
+            kCGEventFlagMaskControl = 0x40000
+            kCGEventFlagMaskAlternate = 0x80000
+            kCGEventFlagMaskShift = 0x20000
+            kCGEventFlagMaskNumericPad = 0x200000
+            kCGEventFlagMaskSecondaryFn = 0x800000
+
+            @staticmethod
+            def CGEventCreateKeyboardEvent(source, vk, down):
+                return {"vk": vk, "down": down, "type": "key", "flags": 0, "unicode": None}
+
+            @staticmethod
+            def CGEventSetType(event, kind):
+                event["type"] = kind
+
+            @staticmethod
+            def CGEventSetFlags(event, flags):
+                event["flags"] = flags
+
+            @staticmethod
+            def CGEventKeyboardSetUnicodeString(event, length, text):
+                event["unicode"] = text
+
+            @staticmethod
+            def CGEventPost(tap, event):
+                posted.append(event)
+
+        cycled = []
+        kb = _MacKeyboard(
+            SimpleNamespace(_mapping={"f": 3}),
+            FakeKey,
+            quartz=FakeQuartz,
+            cycle_input_source=lambda: (cycled.append(True) or True),
+        )
+        # Ctrl + Left must emit FlagsChanged and arrow NumericPad|SecondaryFn flags.
+        kb.press(FakeKey.ctrl_l)
+        kb.press(FakeKey.left)
+        kb.release(FakeKey.left)
+        kb.release(FakeKey.ctrl_l)
+        self.assertEqual(posted[0]["type"], FakeQuartz.kCGEventFlagsChanged)
+        self.assertEqual(posted[0]["flags"], FakeQuartz.kCGEventFlagMaskControl)
+        arrow_expected = (
+            FakeQuartz.kCGEventFlagMaskControl
+            | FakeQuartz.kCGEventFlagMaskNumericPad
+            | FakeQuartz.kCGEventFlagMaskSecondaryFn
+        )
+        self.assertEqual(posted[1]["vk"], 123)
+        self.assertEqual(posted[1]["flags"], arrow_expected)
+        self.assertEqual(posted[2]["flags"], arrow_expected)
+        self.assertEqual(posted[3]["type"], FakeQuartz.kCGEventFlagsChanged)
+        self.assertEqual(posted[3]["flags"], 0)
+
+        # Caps Lock cycles macOS input source once on press and does not post raw vk 57.
+        before = len(posted)
+        kb.press(FakeKey.caps_lock)
+        kb.release(FakeKey.caps_lock)
+        self.assertEqual(cycled, [True])
+        self.assertEqual(len(posted), before)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -128,6 +128,22 @@ class FrameRateViewerTests(unittest.TestCase):
             window.ImageTk.PhotoImage.assert_called_once()
             photo.paste.assert_called_once_with(second)
 
+    def test_combobox_popdown_focus_keyerror_does_not_fail_display_or_motion(self):
+        worker = self.worker()
+        window = fake_view(worker)
+        window._frame = Image.new('RGB', (320, 180))
+        self.addCleanup(window._frame.close)
+        window._image_rect = (0, 0, 320, 180)
+        window._input.begin(1)
+        window._input.enable(1)
+        window.canvas.focus_get.side_effect = KeyError('popdown')
+        window._safe_status()
+        self.assertIsNone(worker.terminal_error)
+        self.assertFalse(window._ended)
+        self.assertIn('点击画面控制', window.status.set.call_args.args[0])
+        self.assertEqual(window._mouse_move(Mock(x=10, y=10)), 'break')
+        self.assertEqual(window._input.take(), [])
+
 
 if __name__ == '__main__':
     unittest.main()

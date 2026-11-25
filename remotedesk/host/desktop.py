@@ -7,12 +7,168 @@ No input listeners, background service or permission prompts are installed.
 
 from __future__ import annotations
 
+import ctypes
 import io
 import logging
 import math
 import os
 import sys
 import time
+
+
+def _cycle_macos_input_source():
+    """Cycle enabled macOS keyboard input sources (e.g. ABC <-> Pinyin)."""
+    try:
+        cf = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+        hitoolbox = ctypes.CDLL(
+            "/System/Library/Frameworks/Carbon.framework/Frameworks/HIToolbox.framework/HIToolbox"
+        )
+    except OSError:
+        return False
+    cf.CFArrayGetCount.argtypes = [ctypes.c_void_p]
+    cf.CFArrayGetCount.restype = ctypes.c_long
+    cf.CFArrayGetValueAtIndex.argtypes = [ctypes.c_void_p, ctypes.c_long]
+    cf.CFArrayGetValueAtIndex.restype = ctypes.c_void_p
+    cf.CFRelease.argtypes = [ctypes.c_void_p]
+    cf.CFEqual.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    cf.CFEqual.restype = ctypes.c_bool
+    cf.CFBooleanGetValue.argtypes = [ctypes.c_void_p]
+    cf.CFBooleanGetValue.restype = ctypes.c_bool
+    hitoolbox.TISCopyCurrentKeyboardInputSource.restype = ctypes.c_void_p
+    hitoolbox.TISCreateInputSourceList.argtypes = [ctypes.c_void_p, ctypes.c_bool]
+    hitoolbox.TISCreateInputSourceList.restype = ctypes.c_void_p
+    hitoolbox.TISGetInputSourceProperty.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    hitoolbox.TISGetInputSourceProperty.restype = ctypes.c_void_p
+    hitoolbox.TISSelectInputSource.argtypes = [ctypes.c_void_p]
+    hitoolbox.TISSelectInputSource.restype = ctypes.c_int32
+    try:
+        k_id = ctypes.c_void_p.in_dll(hitoolbox, "kTISPropertyInputSourceID")
+        k_cat = ctypes.c_void_p.in_dll(hitoolbox, "kTISPropertyInputSourceCategory")
+        k_sel = ctypes.c_void_p.in_dll(hitoolbox, "kTISPropertyInputSourceIsSelectCapable")
+        k_kb = ctypes.c_void_p.in_dll(hitoolbox, "kTISCategoryKeyboardInputSource")
+    except ValueError:
+        return False
+
+    current = hitoolbox.TISCopyCurrentKeyboardInputSource()
+    sources = hitoolbox.TISCreateInputSourceList(None, False)
+    try:
+        if not current or not sources:
+            return False
+        current_id = hitoolbox.TISGetInputSourceProperty(current, k_id)
+        if not current_id:
+            return False
+        selectable = []
+        current_index = -1
+        for index in range(cf.CFArrayGetCount(sources)):
+            source = cf.CFArrayGetValueAtIndex(sources, index)
+            category = hitoolbox.TISGetInputSourceProperty(source, k_cat)
+            capable = hitoolbox.TISGetInputSourceProperty(source, k_sel)
+            if not (category and capable and cf.CFEqual(category, k_kb) and cf.CFBooleanGetValue(capable)):
+                continue
+            source_id = hitoolbox.TISGetInputSourceProperty(source, k_id)
+            if source_id and cf.CFEqual(source_id, current_id):
+                current_index = len(selectable)
+            selectable.append(source)
+        if len(selectable) < 2:
+            return False
+        target = selectable[(current_index + 1) % len(selectable)]
+        return hitoolbox.TISSelectInputSource(target) == 0
+    finally:
+        if sources:
+            cf.CFRelease(sources)
+        if current:
+            cf.CFRelease(current)
+
+
+class _MacKeyboard:
+    """Post macOS Quartz events with proper FlagsChanged and arrow/Fn flags.
+
+    pynput's macOS controller posts modifier keys as KeyDown and clears the
+    SecondaryFn/NumericPad flags on arrow keys, which causes Mission Control,
+    Spaces switching (Ctrl+Arrow), Cmd+Tab, and Caps Lock IME toggle to fail.
+    """
+
+    _ARROW_VKS = {123, 124, 125, 126}
+    _FN_VKS = {
+        64, 79, 80, 90, 96, 97, 98, 99, 100, 101, 103, 105, 106, 107, 109,
+        111, 113, 115, 116, 117, 118, 119, 120, 121, 122,
+    }
+
+    def __init__(self, base, key_enum, quartz=None, cycle_input_source=_cycle_macos_input_source):
+        if quartz is None:
+            import Quartz as quartz
+        self._base = base
+        self._key_enum = key_enum
+        self._quartz = quartz
+        self._cycle_input_source = cycle_input_source
+        self._modifiers = set()
+        self._modifier_masks = {
+            key_enum.cmd: quartz.kCGEventFlagMaskCommand,
+            key_enum.cmd_l: quartz.kCGEventFlagMaskCommand,
+            key_enum.cmd_r: quartz.kCGEventFlagMaskCommand,
+            key_enum.ctrl: quartz.kCGEventFlagMaskControl,
+            key_enum.ctrl_l: quartz.kCGEventFlagMaskControl,
+            key_enum.ctrl_r: quartz.kCGEventFlagMaskControl,
+            key_enum.alt: quartz.kCGEventFlagMaskAlternate,
+            key_enum.alt_l: quartz.kCGEventFlagMaskAlternate,
+            key_enum.alt_r: quartz.kCGEventFlagMaskAlternate,
+            key_enum.alt_gr: quartz.kCGEventFlagMaskAlternate,
+            key_enum.shift: quartz.kCGEventFlagMaskShift,
+            key_enum.shift_l: quartz.kCGEventFlagMaskShift,
+            key_enum.shift_r: quartz.kCGEventFlagMaskShift,
+        }
+        self._caps_cycled = False
+
+    def _flags(self, extra=0):
+        flags = extra
+        for key in self._modifiers:
+            flags |= self._modifier_masks.get(key, 0)
+        return flags
+
+    def _post(self, key, down):
+        quartz = self._quartz
+        if key == self._key_enum.caps_lock:
+            if down:
+                self._caps_cycled = bool(self._cycle_input_source())
+                if self._caps_cycled:
+                    return
+            elif self._caps_cycled:
+                self._caps_cycled = False
+                return
+        if key in self._modifier_masks:
+            if down:
+                self._modifiers.add(key)
+            else:
+                self._modifiers.discard(key)
+            vk = key.value.vk
+            event = quartz.CGEventCreateKeyboardEvent(None, vk, down)
+            quartz.CGEventSetType(event, quartz.kCGEventFlagsChanged)
+            quartz.CGEventSetFlags(event, self._flags())
+            quartz.CGEventPost(quartz.kCGHIDEventTap, event)
+            return
+
+        if isinstance(key, self._key_enum):
+            vk = key.value.vk
+            char = None
+        else:
+            char = key
+            vk = getattr(self._base, "_mapping", {}).get(char)
+        extra = 0
+        if vk in self._ARROW_VKS:
+            extra = quartz.kCGEventFlagMaskNumericPad | quartz.kCGEventFlagMaskSecondaryFn
+        elif vk in self._FN_VKS:
+            extra = quartz.kCGEventFlagMaskSecondaryFn
+        event = quartz.CGEventCreateKeyboardEvent(None, 0 if vk is None else vk, down)
+        quartz.CGEventSetFlags(event, self._flags(extra))
+        if vk is None and isinstance(char, str):
+            quartz.CGEventKeyboardSetUnicodeString(event, len(char), char)
+        quartz.CGEventPost(quartz.kCGHIDEventTap, event)
+
+    def press(self, key):
+        self._post(key, True)
+
+    def release(self, key):
+        self._post(key, False)
 
 
 class Desktop:
@@ -165,7 +321,10 @@ class Desktop:
             from pynput import keyboard, mouse
 
             self._mouse = mouse.Controller()
-            self._keyboard = keyboard.Controller()
+            controller = keyboard.Controller()
+            self._keyboard = (
+                _MacKeyboard(controller, keyboard.Key) if sys.platform == "darwin" else controller
+            )
             self._button_names = {
                 name: getattr(mouse.Button, name)
                 for name in ("left", "right", "middle")

@@ -72,13 +72,13 @@ def _new_encoder(size, max_bitrate, frame_rate):
     context.gop_size = gop
     rate_kbps = max_bitrate // 1000
     context.options = {
-        'preset': 'superfast',
+        'preset': 'veryfast',
         'tune': 'zerolatency',
         'crf': '18',
         'x264-params': (
             'bframes=0:rc-lookahead=0:sync-lookahead=0:repeat-headers=1:'
             f'annexb=1:ref=1:keyint={gop}:min-keyint={gop}:scenecut=0:'
-            f'vbv-maxrate={rate_kbps}:vbv-bufsize={max(1, rate_kbps // 10)}'
+            f'vbv-maxrate={rate_kbps}:vbv-bufsize={max(1, rate_kbps // 4)}'
         ),
     }
     context.open()
