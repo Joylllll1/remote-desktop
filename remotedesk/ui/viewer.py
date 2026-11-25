@@ -45,6 +45,8 @@ _RETRY_DELAYS = (1, 2, 5, 10, 20)
 _RESOLUTIONS = {"清晰 · 1920": 1920, "省流量 · 1280": 1280}
 _FRAME_RATES = {"流畅 · 60 帧": 60, "标准 · 30 帧": 30}
 _DISPLAY_POLL_MS = 8
+_HEARTBEAT_INTERVAL = 0.20
+_WATCHDOG_INTERVAL = 0.1
 # Tk 9 touchpad deltas are pixel-like movement, whereas the wire protocol and
 # pynput use wheel steps. Accumulate small movements rather than dropping them
 # or sending one whole wheel step per pixel.
@@ -212,9 +214,16 @@ class _RecoveryWorker(threading.Thread):
             self._resolution = width
 
     def _apply_resolution(self, session):
-        session.set_resolution(self.resolution)
+        # UI callbacks may change preferences while a socket write blocks.
+        # Cache the same snapshot that was sent, without holding the UI lock
+        # across network operations.
+        with self._lock:
+            settings = (self._resolution, self._frame_rate)
+        width, frame_rate = settings
+        session.set_resolution(width)
         if getattr(session, "supports_frame_rate_control", False):
-            session.set_frame_rate(self.frame_rate)
+            session.set_frame_rate(frame_rate)
+        return settings
 
     @property
     def frame_rate(self):
@@ -315,10 +324,12 @@ class _RecoveryWorker(threading.Thread):
                 events = self.inputs.take(epoch)
                 if stopped.is_set() or self._cancelled.is_set():
                     return
-                if events or time.monotonic() >= heartbeat_at:
+                now = time.monotonic()
+                if events or now >= heartbeat_at:
                     session.send_input(events)
-                    heartbeat_at = time.monotonic() + 0.05
-                self.inputs.wait(epoch, max(0, heartbeat_at - time.monotonic()))
+                    heartbeat_at = time.monotonic() + _HEARTBEAT_INTERVAL
+                wait_for = min(_WATCHDOG_INTERVAL, max(0.0, heartbeat_at - time.monotonic()))
+                self.inputs.wait(epoch, wait_for)
         except Exception as error:
             if not stopped.is_set() and not self._cancelled.is_set():
                 errors.put_nowait(error)
@@ -381,8 +392,9 @@ class _RecoveryWorker(threading.Thread):
                 if self._cancelled.is_set():
                     break
                 resolution_control = bool(getattr(session, "supports_resolution_control", False))
+                applied_settings = None
                 if resolution_control:
-                    self._apply_resolution(session)
+                    applied_settings = self._apply_resolution(session)
                 self.states.put(("capabilities", resolution_control))
                 self.states.put(("frame_rate_capability", bool(getattr(session, "supports_frame_rate_control", False))))
                 continuous_frames = bool(getattr(session, "supports_continuous_frames", False))
@@ -412,7 +424,10 @@ class _RecoveryWorker(threading.Thread):
                     started = time.monotonic()
                     self._raise_sender_error(sender_errors)
                     if resolution_control:
-                        self._apply_resolution(session)
+                        with self._lock:
+                            desired = (self._resolution, self._frame_rate)
+                        if desired != applied_settings:
+                            applied_settings = self._apply_resolution(session)
                     frame = None
                     try:
                         frame = self._receive_frame(session, [] if asynchronous else self.inputs.take(epoch))
@@ -765,10 +780,24 @@ class _Viewer:
         scale = min(width / self._frame.width, height / self._frame.height)
         size = (max(1, int(self._frame.width * scale)), max(1, int(self._frame.height * scale)))
         if self._rendered_frame is not self._frame or self._rendered_size != size:
-            resampling = getattr(self.Image, "Resampling", self.Image).BILINEAR
-            with self._frame.resize(size, resampling) as image:
-                self._photo = self.ImageTk.PhotoImage(image, master=self.root)
-            self.canvas.itemconfigure(self._image_item, image=self._photo, state="normal")
+            resized = None
+            if size == self._frame.size:
+                image = self._frame
+            else:
+                resampling = getattr(self.Image, "Resampling", self.Image).BILINEAR
+                resized = self._frame.resize(size, resampling)
+                image = resized
+            try:
+                if (self._photo is not None and self._rendered_size == size
+                        and hasattr(self._photo, "paste")):
+                    self._photo.paste(image)
+                    self.canvas.itemconfigure(self._image_item, state="normal")
+                else:
+                    self._photo = self.ImageTk.PhotoImage(image, master=self.root)
+                    self.canvas.itemconfigure(self._image_item, image=self._photo, state="normal")
+            finally:
+                if resized is not None:
+                    resized.close()
             self._rendered_frame, self._rendered_size = self._frame, size
         left, top = (width - size[0]) // 2, (height - size[1]) // 2
         self.canvas.coords(self._image_item, left, top)

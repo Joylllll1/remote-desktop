@@ -693,13 +693,13 @@ class _Panel:
         self._log(line)
         if self._host_state == "stopping":
             return
-        if "正在共享桌面" in line:
+        if line.startswith("正在共享桌面 "):
             self._host_state = "running"
             self._retry_attempt = 0
             self.host_text.set("正在共享本机 · 仅允许 %s。" % self._host_peer[1])
-        elif "已连接" in line:
+        elif line == "%s 已连接。" % self._host_peer[1]:
             self.host_text.set("%s 正在控制本机。" % self._host_peer[1])
-        elif "等待重新连接" in line:
+        elif line == "会话已结束，等待重新连接。":
             self.host_text.set("正在共享本机 · 等待 %s 连接。" % self._host_peer[1])
 
     def _host_exit(self, process, code):

@@ -36,3 +36,22 @@ class VideoRateTests(unittest.TestCase):
         for now in range(22, 200):
             rate.acknowledge(.1, now)
         self.assertEqual(rate.bitrate, 8_000_000)
+
+    def test_high_rtt_uncongested_relay_keeps_bitrate_and_expands_frame_window(self):
+        rate = VideoRateControl()
+        # Simulate 160 ms RTT + decode (~170 ms) without queuing congestion.
+        for index in range(12):
+            rate.acknowledge(.170, index * .05)
+        self.assertEqual(rate.bitrate, 8_000_000)
+        self.assertEqual(rate.frame_window(4, 8, 60), 8)
+        # Excess queuing delay above baseline (> 0.170 + 0.110 = 0.280) still throttles
+        # and immediately shrinks the flight window back to base_limit.
+        for index in range(3):
+            rate.acknowledge(.350, 2 + index * .1)
+        self.assertEqual(rate.bitrate, 5_600_000)
+        self.assertEqual(rate.frame_window(4, 8, 60), 4)
+        # Sustained healthy feedback at 170 ms can recover bitrate on a high-RTT relay.
+        for now in range(5, 20):
+            rate.acknowledge(.170, now)
+        self.assertGreater(rate.bitrate, 5_600_000)
+        self.assertEqual(rate.frame_window(4, 8, 60), 8)

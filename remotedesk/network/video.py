@@ -8,6 +8,7 @@ start there.  Instances belong to one stream worker and are not thread-safe.
 from dataclasses import dataclass
 from fractions import Fraction
 from functools import lru_cache
+import os
 import struct
 
 from PIL import Image
@@ -15,6 +16,7 @@ from PIL import Image
 from remotedesk.network.tiles import MAX_FRAME, MAX_HEIGHT, MAX_PIXELS, MAX_WIDTH
 
 FPS = 30
+GOP_SECONDS = 10
 DEFAULT_MAX_BITRATE = 8_000_000
 _VERSION = 1
 _KEYFRAME = 1
@@ -53,24 +55,29 @@ def _av():
     return av
 
 
+def _codec_threads():
+    return min(4, max(2, os.cpu_count() or 2))
+
+
 def _new_encoder(size, max_bitrate, frame_rate):
     context = _av().CodecContext.create('libx264', 'w')
     context.width, context.height = size
     context.pix_fmt = 'yuv444p'
     context.time_base = Fraction(1, frame_rate)
     context.framerate = Fraction(frame_rate, 1)
-    context.thread_count = 2
+    context.thread_count = _codec_threads()
     context.thread_type = 'SLICE'
     context.max_b_frames = 0
-    context.gop_size = frame_rate * 2
+    gop = frame_rate * GOP_SECONDS
+    context.gop_size = gop
     rate_kbps = max_bitrate // 1000
     context.options = {
-        'preset': 'veryfast',
+        'preset': 'superfast',
         'tune': 'zerolatency',
         'crf': '18',
         'x264-params': (
             'bframes=0:rc-lookahead=0:sync-lookahead=0:repeat-headers=1:'
-            f'annexb=1:ref=1:keyint={frame_rate * 2}:min-keyint={frame_rate * 2}:scenecut=0:'
+            f'annexb=1:ref=1:keyint={gop}:min-keyint={gop}:scenecut=0:'
             f'vbv-maxrate={rate_kbps}:vbv-bufsize={max(1, rate_kbps // 10)}'
         ),
     }
@@ -82,7 +89,7 @@ def _new_encoder(size, max_bitrate, frame_rate):
 
 def _new_decoder():
     context = _av().CodecContext.create('h264', 'r')
-    context.thread_count = 2
+    context.thread_count = _codec_threads()
     # FRAME/AUTO threading delays output until more packets arrive.
     context.thread_type = 'SLICE'
     context.options = {'max_pixels': str(_MAX_CODED_PIXELS), 'err_detect': 'explode'}
@@ -412,10 +419,22 @@ class VideoDecoder:
     def __init__(self):
         self._codec = None
         self._sequence = None
+        self._param_sets = None
+        self._reformatter = None
 
     def close(self):
         self._codec = None
         self._sequence = None
+        self._param_sets = None
+        self._reformatter = None
+
+    def _to_rgb_image(self, frame):
+        if self._reformatter is None:
+            from av.video.reformatter import VideoReformatter
+            self._reformatter = VideoReformatter()
+        rgb = self._reformatter.reformat(frame, format='rgb24')
+        plane = rgb.planes[0]
+        return Image.frombytes('RGB', (rgb.width, rgb.height), memoryview(plane), 'raw', 'RGB', plane.line_size)
 
     def decode(self, payload):
         if (not isinstance(payload, bytes) or not 1 + _HEADER.size < len(payload) <= MAX_FRAME
@@ -431,24 +450,24 @@ class VideoDecoder:
             raise ValueError('共享端尚未提供完整的视频关键帧。')
         encoded = payload[1 + _HEADER.size:]
         parts, slices = [], []
-        seen_sps = seen_pps = False
+        seen_sps = seen_pps = None
         for nal in _nals(encoded):
             kind = nal[0] & 31
             if kind in (7, 8):
                 if not keyframe or slices or not nal[0] & 0x60:
                     raise ValueError('H.264 参数出现位置无效。')
                 if kind == 7:
-                    if seen_sps or seen_pps:
+                    if seen_sps is not None or seen_pps is not None:
                         raise ValueError('H.264 画面参数重复。')
-                    sequence, seen_sps = _sequence(nal, size), True
+                    sequence, seen_sps = _sequence(nal, size), nal
                 else:
-                    if not seen_sps or seen_pps:
+                    if seen_sps is None or seen_pps is not None:
                         raise ValueError('H.264 图像参数无效。')
                     _picture(nal)
-                    seen_pps = True
+                    seen_pps = nal
                 parts.append(nal)
             elif kind in (1, 5):
-                if (sequence is None or (keyframe and not seen_pps)
+                if (sequence is None or (keyframe and seen_pps is None)
                         or (kind == 5) != keyframe or not nal[0] & 0x60):
                     raise ValueError('H.264 画面缺少完整的参数。')
                 first_mb, identity = _slice(nal, sequence)
@@ -459,11 +478,13 @@ class VideoDecoder:
                 parts.append(nal)
             # SEI and AUD carry no pixels.  Do not pass unneeded metadata from
             # the network into the native decoder.
-        if not slices or (keyframe and not (seen_sps and seen_pps)):
+        if not slices or (keyframe and (seen_sps is None or seen_pps is None)):
             raise ValueError('H.264 画面缺少像素数据。')
+        param_sets = (seen_sps, seen_pps) if keyframe else self._param_sets
         try:
             av = _av()
-            context = _new_decoder() if keyframe else self._codec
+            reuse = keyframe and self._codec is not None and self._param_sets == param_sets
+            context = self._codec if (not keyframe or reuse) else _new_decoder()
             packet = av.Packet(b''.join(b'\x00\x00\x00\x01' + nal for nal in parts))
             frames = context.decode(packet)
             if len(frames) != 1:
@@ -471,7 +492,7 @@ class VideoDecoder:
             frame = frames[0]
             if frame.is_corrupt or (frame.width, frame.height) != size or frame.format.name != 'yuv444p':
                 raise ValueError('H.264 解码后的尺寸或像素格式无效。')
-            result = frame.to_image()
+            result = self._to_rgb_image(frame)
             if result.mode != 'RGB' or result.size != size:
                 result.close()
                 raise ValueError('H.264 解码后的画面格式无效。')
@@ -480,5 +501,5 @@ class VideoDecoder:
             if isinstance(error, RuntimeError):
                 raise
             raise ValueError('桌面视频编码无效。') from error
-        self._codec, self._sequence = context, sequence
+        self._codec, self._sequence, self._param_sets = context, sequence, param_sets
         return result

@@ -127,14 +127,14 @@ class ViewerLatencyTests(unittest.TestCase):
     def test_idle_sender_preserves_heartbeat_and_bounded_watchdog_wait(self):
         inputs = ObservedInputs()
         worker, session, sender, errors = self.start_sender(inputs)
-        heartbeat_at, events = session.sent.get(timeout=.5)
-        next_at, next_events = session.sent.get(timeout=.5)
+        heartbeat_at, events = session.sent.get(timeout=1)
+        next_at, next_events = session.sent.get(timeout=1)
         self.assertEqual((events, next_events), ([], []))
-        self.assertGreaterEqual(next_at - heartbeat_at, .03)
+        self.assertGreaterEqual(next_at - heartbeat_at, viewer._HEARTBEAT_INTERVAL * 0.7)
         for _ in range(2):
             timeout = inputs.waits.get(timeout=1)
             self.assertGreaterEqual(timeout, 0)
-            self.assertLessEqual(timeout, .05)
+            self.assertLessEqual(timeout, viewer._WATCHDOG_INTERVAL)
         worker.cancel()
         sender.join(.5)
         self.assertFalse(sender.is_alive())

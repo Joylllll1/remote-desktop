@@ -27,15 +27,17 @@ READY_V5 = b"remote-desktop/5 ready"
 READY_V6 = b"remote-desktop/6 ready"
 BUSY = b"remote-desktop/2 busy"
 INPUT_LEASE = 3.0
-CONTROL_IDLE = 45.0
-TRANSFER_IDLE = 25.0
+CONTROL_IDLE = 20.0
+TRANSFER_IDLE = 12.0
 TRANSFER_TOTAL = 60.0
 # The byte window includes the packet length and frame envelope. A frame larger
 # than this budget is allowed only as the sole outstanding frame (<= MAX_FRAME).
 MAX_IN_FLIGHT_FRAMES = 3
 # At 60 fps four credits cover a 40 ms RTT plus encoding/decoding without
-# expanding the byte budget. At 30 fps the original three-credit limit applies.
+# expanding the byte budget. Higher-RTT healthy paths may scale up to 8 frames
+# (still capped by MAX_IN_FLIGHT_BYTES); at 30 fps the three-credit limit applies.
 MAX_IN_FLIGHT_FRAMES_60 = 4
+MAX_IN_FLIGHT_FRAMES_60_HIGH_RTT = 8
 MAX_IN_FLIGHT_BYTES = 512 * 1024
 FRAME_INTERVAL = 0.1
 FRAME_HEADER = struct.Struct("!QH")  # sequence, requested resolution profile
@@ -125,6 +127,12 @@ def _configure(sock):
     sock.setblocking(False)
     if sock.family in (socket.AF_INET, socket.AF_INET6):
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        with suppress(OSError, AttributeError):
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        for option, value in (("TCP_KEEPIDLE", 15), ("TCP_KEEPALIVE", 15), ("TCP_KEEPINTVL", 5), ("TCP_KEEPCNT", 3)):
+            if hasattr(socket, option):
+                with suppress(OSError):
+                    sock.setsockopt(socket.IPPROTO_TCP, getattr(socket, option), value)
 
 
 class StreamClient:
@@ -348,7 +356,8 @@ def serve_stream(conn, desktop, *, version=4):
                         while outstanding and outstanding[0][0] <= last_ack:
                             _, size, sent_at = outstanding.popleft()
                             outstanding_bytes -= size
-                            rate_control.acknowledge(last_command - sent_at, last_command)
+                            if video:
+                                rate_control.acknowledge(last_command - sent_at, last_command)
                     if version >= 4:
                         if "width" in command:
                             requested_width = width
@@ -369,7 +378,8 @@ def serve_stream(conn, desktop, *, version=4):
             with request_lock:
                 request_lock.notify_all()
             _shutdown(conn)
-            desktop.apply([{"type": "release"}])
+            with suppress(Exception):
+                desktop.apply([{"type": "release"}])
 
     reader = threading.Thread(target=controls, name="desktop-controls", daemon=True)
     encoder = None
@@ -388,14 +398,18 @@ def serve_stream(conn, desktop, *, version=4):
     report_capture = report_send = 0.0
     report_encode = 0.0
     applied_bitrate = rate_control.bitrate
+    def _frame_limit():
+        if video and requested_frame_rate == 60:
+            return rate_control.frame_window(MAX_IN_FLIGHT_FRAMES_60, MAX_IN_FLIGHT_FRAMES_60_HIGH_RTT, 60)
+        return MAX_IN_FLIGHT_FRAMES
+
     try:
         while not stopped.is_set():
             if version >= 4:
                 with request_lock:
                     while not stopped.is_set():
                         frame_timer.set_rate(requested_frame_rate if video else 30)
-                        frame_limit = (MAX_IN_FLIGHT_FRAMES_60 if video and requested_frame_rate == 60
-                                       else MAX_IN_FLIGHT_FRAMES)
+                        frame_limit = _frame_limit()
                         available = (streaming and len(outstanding) < frame_limit
                                      and outstanding_bytes < MAX_IN_FLIGHT_BYTES
                                      and (not drain_window or not outstanding))
@@ -407,8 +421,10 @@ def serve_stream(conn, desktop, *, version=4):
                     break
                 # Do not capture ahead while the previous write is stalled or
                 # the socket has no send space. Input has its own reader.
+                wait_started = time.monotonic()
                 while not stopped.is_set() and not _wait(conn, True, 0.2):
-                    pass
+                    if time.monotonic() - wait_started >= TRANSFER_IDLE:
+                        raise TimeoutError("发送缓冲区持续拥塞，等待发送空间超时。")
                 with request_lock:
                     width = requested_width
                     frame_rate = requested_frame_rate
@@ -463,8 +479,7 @@ def serve_stream(conn, desktop, *, version=4):
             if version >= 4:
                 wire_size = 4 + FRAME_HEADER.size + len(payload)
                 with request_lock:
-                    frame_limit = (MAX_IN_FLIGHT_FRAMES_60 if video and requested_frame_rate == 60
-                                   else MAX_IN_FLIGHT_FRAMES)
+                    frame_limit = _frame_limit()
                     if len(outstanding) >= frame_limit:
                         # The reader can lower 60 -> 30 while capture/encoding
                         # is running. Do not reserve a fourth frame afterward.

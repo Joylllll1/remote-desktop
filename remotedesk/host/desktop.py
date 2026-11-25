@@ -53,6 +53,8 @@ class Desktop:
         self._key_names = {}
         self._held_buttons = {}
         self._held_keys = {}
+        self._video_reformatter = None
+        self._video_frame = None
         self.reset_stream()
 
     def reset_stream(self, *, minimum_width=800):
@@ -196,6 +198,7 @@ class Desktop:
         finally:
             self._capture = self._monitor = self._image = None
             self._mouse = self._keyboard = None
+            self._video_reformatter = self._video_frame = None
             self._held_buttons.clear()
             self._held_keys.clear()
         if errors:
@@ -228,10 +231,16 @@ class Desktop:
     def capture_video_frame(self, max_width):
         """Convert MSS pixels directly into the encoder's scaled 4:4:4 format."""
         import av
+        from av.video.reformatter import VideoReformatter
 
         shot, size = self._grab(max_width)
         width, height = shot.size
-        frame = av.VideoFrame(width, height, "bgr0")
+        frame = self._video_frame
+        if frame is None or frame.width != width or frame.height != height:
+            frame = av.VideoFrame(width, height, "bgr0")
+            self._video_frame = frame
+        if self._video_reformatter is None:
+            self._video_reformatter = VideoReformatter()
         plane = frame.planes[0]
         stride = width * 4
         if plane.line_size == stride:
@@ -242,7 +251,9 @@ class Desktop:
             for row in range(height):
                 offset = row * plane.line_size
                 target[offset:offset + stride] = source[row * stride:(row + 1) * stride]
-        return frame.reformat(*size, format="yuv444p", interpolation="BILINEAR")
+        return self._video_reformatter.reformat(
+            frame, width=size[0], height=size[1], format="yuv444p", interpolation="BILINEAR",
+        )
 
     def capture_image(self, max_width=1920):
         """Return an owned RGB image; explicit sizing never changes input coordinates."""

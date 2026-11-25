@@ -256,7 +256,7 @@ class VideoCodecTests(unittest.TestCase):
                 self.assertTrue(keyframe[2] & 1)
                 self.assertEqual(self.encoder._codec.time_base, Fraction(1, frame_rate))
                 self.assertEqual(self.encoder._codec.framerate, Fraction(frame_rate, 1))
-                self.assertEqual(self.encoder._codec.gop_size, frame_rate * 2)
+                self.assertEqual(self.encoder._codec.gop_size, frame_rate * video.GOP_SECONDS)
                 # An existing decoder and one joining at the changed rate both
                 # consume the new SPS/PPS/IDR followed by its P frame immediately.
                 fresh = VideoDecoder()
@@ -346,20 +346,21 @@ class VideoCodecTests(unittest.TestCase):
 
     def test_periodic_idrs_and_high_entropy_frames_remain_bounded(self):
         rng = random.Random(19)
-        for frame_rate in (30, 60):
-            self.encoder.set_frame_rate(frame_rate)
-            self.encoder.close()
-            total = 0
-            frame_count = frame_rate * 2 + 5
-            for index in range(frame_count):
-                with Image.frombytes('RGB', (320, 180), rng.randbytes(320 * 180 * 3)) as image:
-                    payload, result = self.encode_decode(image)
-                    self.assertLessEqual(len(payload), video.MAX_FRAME)
-                    self.assertEqual(bool(payload[2] & 1), index in (0, frame_rate * 2))
-                    self.assertEqual(result.size, image.size)
-                    total += len(payload)
-            # VBV permits a short initial burst, then caps aggregate encoded data.
-            self.assertLess(total, 8_000_000 / 8 * (frame_count / frame_rate + 0.2))
+        with patch.object(video, 'GOP_SECONDS', 2):
+            for frame_rate in (30, 60):
+                self.encoder.set_frame_rate(frame_rate)
+                self.encoder.close()
+                total = 0
+                frame_count = frame_rate * video.GOP_SECONDS + 5
+                for index in range(frame_count):
+                    with Image.frombytes('RGB', (320, 180), rng.randbytes(320 * 180 * 3)) as image:
+                        payload, result = self.encode_decode(image)
+                        self.assertLessEqual(len(payload), video.MAX_FRAME)
+                        self.assertEqual(bool(payload[2] & 1), index in (0, frame_rate * video.GOP_SECONDS))
+                        self.assertEqual(result.size, image.size)
+                        total += len(payload)
+                # VBV permits a short initial burst, then caps aggregate encoded data.
+                self.assertLess(total, 8_000_000 / 8 * (frame_count / frame_rate + 0.2))
 
 
 if __name__ == '__main__':
