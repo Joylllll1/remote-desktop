@@ -99,6 +99,15 @@ Mac 已从 Windows 实机接收并解码桌面画面，Mac 控制 Linux X11 已�
 
 **设备在线但连不上时**，先确认被控端面板显示「正在共享本机」，且允许的是当前控制设备。连接超时再检查主机防火墙和 Tailscale 访问规则是否允许控制端访问被控端的 TCP 47650。提示 `Stopped` 时先连接 Tailscale。若同时使用其他 VPN，可参考 [Tailscale 的共存说明](https://tailscale.com/docs/reference/faq/other-vpns)。
 
+**两台电脑同在校园网但连接超时或频繁卡死时**，可能是校园网对同网段内网互访做了隔离或限速，导致 Tailscale 误选内网直连（`tailscale status` 显示 `direct 10.x.x.x:41641`，而 `tailscale ping` 大量超时）。可在 Windows 被控端用管理员 PowerShell 屏蔽校园网内网段的 Tailscale 直连端口（保留家庭 `192.168.x.x` 局域网直连），再重连 Tailscale 以稳定走中转：
+
+```powershell
+New-NetFirewallRule -DisplayName "Block Tailscale Campus Direct In" -Direction Inbound -Protocol UDP -LocalPort 41641 -RemoteAddress 10.0.0.0/8 -Action Block
+New-NetFirewallRule -DisplayName "Block Tailscale Campus Direct Out" -Direction Outbound -Protocol UDP -RemotePort 41641 -RemoteAddress 10.0.0.0/8 -Action Block
+```
+
+需要恢复时执行 `Remove-NetFirewallRule -DisplayName "Block Tailscale Campus Direct*"`。
+
 **出门前验证外网连接**，可以先让随身电脑切换到手机热点，运行 `check home-pc`。看到「首次连接成功」和「重新连接成功」后，打开远程窗口，在家中电脑的空白文本编辑器里输入一行字，确认画面和键鼠都可用。
 
 完整命令选项见 `remote_desktop.py --help`。在项目目录中，用同一虚拟环境的 Python 执行 `-m unittest discover -v` 可运行仓库测试。[依赖清单](requirements.txt) · [会话协议测试](tests/test_session.py)
