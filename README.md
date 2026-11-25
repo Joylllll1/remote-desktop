@@ -20,13 +20,14 @@
 
 ## 快速开始
 
-两台电脑都需要连接同一个 [Tailscale 网络](https://tailscale.com/download)。打开 [GitHub Releases 下载页](https://github.com/Joylllll1/remote-desktop/releases/latest)，在 **Assets** 中为每台电脑选择对应的安装包。
+两台电脑都需要连接同一个 [Tailscale 网络](https://tailscale.com/download)。打开 [GitHub Releases 下载页](https://github.com/Joylllll1/remote-desktop/releases)，在 **Assets** 中为每台电脑选择对应的安装包。
 
 | 平台 | 安装与启动 |
 | --- | --- |
 | Windows 10/11（x64） | 双击 `RemoteDesktop-Windows-x64.exe`，按提示安装，然后从开始菜单打开远程桌面应用。 |
-| macOS | Apple 芯片选 `RemoteDesktop-macOS-arm64.dmg`，Intel 芯片选 `RemoteDesktop-macOS-x86_64.dmg`。打开镜像，把 `RemoteDesktop.app` 拖入“应用程序”，从那里启动。 |
-| Ubuntu 24.04 / Debian 13（amd64） | 用系统软件安装器打开 `RemoteDesktop-Linux-amd64.deb`，或在文件所在目录运行 `sudo apt install ./RemoteDesktop-Linux-amd64.deb`，安装后从应用菜单启动。 |
+| macOS（Apple 芯片） | 下载 `RemoteDesktop-macOS-arm64.dmg`。打开镜像，把 `RemoteDesktop.app` 拖入“应用程序”，从那里启动。 |
+
+Intel Mac 和 Linux 的本地构建方法见 [macOS 构建说明](packaging/macos/README.md)和 [Linux 构建说明](packaging/linux/README.md)。
 
 Windows 和 macOS 包含 Python 和 Tk。Linux 由包管理器安装所需的系统依赖。当前自用构建未使用 Windows 发布者证书或 Apple 开发者公证，首次运行时系统可能提示确认来源。Mac 若提示无法验证开发者，可参阅 [Apple 的首次打开说明](https://support.apple.com/zh-cn/102445)。
 
@@ -38,7 +39,7 @@ Windows 和 macOS 包含 Python 和 Tk。Linux 由包管理器安装所需的系
 2. **随身 Mac**：打开「连接设备」，选中家里的电脑，点击「连接」。新窗口会显示对方的主屏幕，点进画面即可操作键鼠。
 3. 临时离开时，在 Mac 上点「断开连接」，稍后可以再连。想结束本次共享，在家里的电脑上点「停止共享」。
 
-**视频传输预览版：[v0.1.7-rc.2](https://github.com/Joylllll1/remote-desktop/releases/tag/v0.1.7-rc.2)。** 提供 Windows 和 Apple 芯片 Mac 安装包，优化高延迟下的帧率、编解码与显示，并修复快速切换设置可能失效的问题。两端更新后使用协议 v6，以 H.264 4:4:4 传输桌面，可选择最高 30 或 60 帧/秒（默认 60）。Apple 芯片版要求 macOS 14+。Intel Mac 可使用 [v0.1.6-rc.5](https://github.com/Joylllll1/remote-desktop/releases/tag/v0.1.6-rc.5) 的控制端连接新版共享端，要求 macOS 11+。新版查看器仍可连接旧共享端，使用其原有传输模式；旧查看器无法连接 v6 共享端，因此请先更新控制端，再更新共享端。预览版不替换常规下载页的 Latest。
+**视频传输预览版：[v0.1.7-rc.2](https://github.com/Joylllll1/remote-desktop/releases/tag/v0.1.7-rc.2)。** 提供 Windows 和 Apple 芯片 Mac 安装包，优化高延迟下的帧率、编解码与显示，并修复快速切换设置可能失效的问题。两端更新后使用协议 v6，以 H.264 4:4:4 传输桌面，可选择最高 30 或 60 帧/秒（默认 60）。Apple 芯片版要求 macOS 14+。新版查看器仍可连接旧共享端，使用其原有传输模式；旧查看器无法连接 v6 共享端，因此请先更新控制端，再更新共享端。
 
 查看窗口默认选择「清晰 · 1920」，可切换「省流量 · 1280」。数字表示传输宽度上限，保持屏幕比例且不放大低分辨率屏幕，不会因网络延迟自动降低分辨率。状态栏显示实际画面格式和近两秒显示帧率；确认出现 **H.264 · 4:4:4** 才表示视频模式已生效。「流畅 · 60 帧」与「标准 · 30 帧」可在连接中切换；实际帧率取决于采集、编码、网络和显示性能。连接旧共享端时禁用帧率选择，保留对方的原有帧率。视频组件不可用时回退到图片模式，最高约 10 帧/秒。
 
