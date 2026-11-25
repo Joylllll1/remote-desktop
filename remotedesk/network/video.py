@@ -148,15 +148,17 @@ class VideoEncoder:
     def encode(self, image):
         if not isinstance(image, Image.Image) or image.mode != 'RGB':
             raise ValueError('桌面编码需要 RGB 图像。')
-        size = _dimensions(image.size)
+        _dimensions(image.size)
+        return self.encode_frame(_av().VideoFrame.from_image(image))
+
+    def encode_frame(self, frame):
+        size = _dimensions((frame.width, frame.height))
         if size != self._size:
             self.close()
         try:
-            av = _av()
             if self._codec is None:
                 self._codec = _new_encoder(size, self._max_bitrate, self._frame_rate)
                 self._size = size
-            frame = av.VideoFrame.from_image(image)
             frame.pts = self._frame_index
             frame.time_base = Fraction(1, self._frame_rate)
             packets = self._codec.encode(frame)

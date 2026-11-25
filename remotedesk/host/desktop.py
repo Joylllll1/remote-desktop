@@ -212,21 +212,46 @@ class Desktop:
     def has_held_input(self):
         return bool(self._held_keys or self._held_buttons)
 
-    def capture_image(self, max_width=1920):
-        """Return an owned RGB image; explicit sizing never changes input coordinates."""
+    def _grab(self, max_width):
         self._require_open()
         if type(max_width) is not int or not 1 <= max_width <= self.MAX_CAPTURE_SIDE:
             raise ValueError("Capture width must be an integer from 1 to 3840")
-        image = None
         try:
             shot = self._capture.grab(self._monitor)
+        except Exception as error:
+            raise RuntimeError("无法截取桌面。" + self._platform_hint()) from error
+        width, height = shot.size
+        scale = min(1, max_width / width, self.MAX_CAPTURE_SIDE / height,
+                    math.sqrt(self.MAX_CAPTURE_PIXELS / (width * height)))
+        return shot, (max(1, int(width * scale)), max(1, int(height * scale)))
+
+    def capture_video_frame(self, max_width):
+        """Convert MSS pixels directly into the encoder's scaled 4:4:4 format."""
+        import av
+
+        shot, size = self._grab(max_width)
+        width, height = shot.size
+        frame = av.VideoFrame(width, height, "bgr0")
+        plane = frame.planes[0]
+        stride = width * 4
+        if plane.line_size == stride:
+            plane.update(shot.raw)
+        else:
+            # FFmpeg aligns rows, including on odd-width monitors.
+            source, target = memoryview(shot.raw), memoryview(plane)
+            for row in range(height):
+                offset = row * plane.line_size
+                target[offset:offset + stride] = source[row * stride:(row + 1) * stride]
+        return frame.reformat(*size, format="yuv444p", interpolation="BILINEAR")
+
+    def capture_image(self, max_width=1920):
+        """Return an owned RGB image; explicit sizing never changes input coordinates."""
+        shot, size = self._grab(max_width)
+        image = None
+        try:
             image = self._image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-            width, height = image.size
-            scale = min(1, max_width / width, self.MAX_CAPTURE_SIDE / height,
-                        math.sqrt(self.MAX_CAPTURE_PIXELS / (width * height)))
-            if scale < 1:
-                image.thumbnail((max(1, int(width * scale)), max(1, int(height * scale))),
-                                self._image.Resampling.BILINEAR)
+            if image.size != size:
+                image.thumbnail(size, self._image.Resampling.BILINEAR)
             return image
         except Exception as error:
             if image is not None:

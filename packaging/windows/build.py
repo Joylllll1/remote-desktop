@@ -17,7 +17,7 @@ import zipfile
 
 HERE = Path(__file__).resolve().parent
 PROJECT = HERE.parent.parent
-VERSION = "0.1.6"
+VERSION = "0.1.7"
 WORK = HERE / ".build"
 CACHE = HERE / ".cache"
 PAYLOAD = WORK / "payload"

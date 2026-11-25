@@ -17,6 +17,7 @@ from contextlib import suppress
 
 from remotedesk.network.session import MAX_FRAME, MAX_INPUT, check_events
 from remotedesk.network.timing import FrameTimer
+from remotedesk.network.rate import VideoRateControl
 from remotedesk.network.video import validate_frame_rate
 
 READY_V2 = b"remote-desktop/2 ready"
@@ -302,6 +303,7 @@ def serve_stream(conn, desktop, *, version=4):
     outstanding_bytes = 0
     last_sequence = last_ack = 0
     drain_window = False
+    rate_control = VideoRateControl()
 
     def release_if_expired(now):
         if now - last_command >= INPUT_LEASE and desktop.has_held_input:
@@ -344,7 +346,9 @@ def serve_stream(conn, desktop, *, version=4):
                     if "ack" in command:
                         last_ack = command["ack"]
                         while outstanding and outstanding[0][0] <= last_ack:
-                            outstanding_bytes -= outstanding.popleft()[1]
+                            _, size, sent_at = outstanding.popleft()
+                            outstanding_bytes -= size
+                            rate_control.acknowledge(last_command - sent_at, last_command)
                     if version >= 4:
                         if "width" in command:
                             requested_width = width
@@ -382,6 +386,8 @@ def serve_stream(conn, desktop, *, version=4):
     report_at = time.monotonic()
     report_frames = report_bytes = 0
     report_capture = report_send = 0.0
+    report_encode = 0.0
+    applied_bitrate = rate_control.bitrate
     try:
         while not stopped.is_set():
             if version >= 4:
@@ -406,6 +412,7 @@ def serve_stream(conn, desktop, *, version=4):
                 with request_lock:
                     width = requested_width
                     frame_rate = requested_frame_rate
+                    bitrate = rate_control.bitrate
                     if not outstanding:
                         drain_window = False
             else:
@@ -429,18 +436,30 @@ def serve_stream(conn, desktop, *, version=4):
                       "画面传输：图片兼容模式，最高 10 帧/秒。", flush=True)
             if video:
                 encoder.set_frame_rate(frame_rate)
+                encoder.set_bitrate(bitrate)
+                if bitrate != applied_bitrate:
+                    print("根据画面接收耗时调整视频码率上限：%.1f Mbps。" %
+                          (bitrate / 1_000_000), flush=True)
+                    applied_bitrate = bitrate
             frame_timer.set_rate(frame_rate if video else 30)
             phase = "采集桌面"
             started = time.monotonic()
             interval = 1 / frame_rate if video else FRAME_INTERVAL
             next_capture = _next_capture_deadline(next_capture, started, interval)
-            if encoder is not None:
+            if video and callable(getattr(desktop, "capture_video_frame", None)):
+                frame = desktop.capture_video_frame(max_width=width)
+                captured = time.monotonic()
+                payload = encoder.encode_frame(frame)
+                del frame
+            elif encoder is not None:
                 with desktop.capture_image(max_width=width) as frame:
+                    captured = time.monotonic()
                     payload = encoder.encode(frame)
             else:
                 frame = desktop.frame()
                 payload = b"U" if frame == previous else b"J" + frame
-            captured = time.monotonic()
+                captured = time.monotonic()
+            encoded = time.monotonic()
             if version >= 4:
                 wire_size = 4 + FRAME_HEADER.size + len(payload)
                 with request_lock:
@@ -458,7 +477,7 @@ def serve_stream(conn, desktop, *, version=4):
                         # the last bytes before write_packet returns here.
                         last_sequence += 1
                         sequence = last_sequence
-                        outstanding.append((sequence, wire_size))
+                        outstanding.append((sequence, wire_size, encoded))
                         outstanding_bytes += wire_size
                 if sequence is None:
                     # Encoded length is unknowable before capture. Never keep
@@ -475,19 +494,21 @@ def serve_stream(conn, desktop, *, version=4):
             report_frames += 1
             report_bytes += len(payload)
             report_capture += captured - started
-            report_send += finished - captured
+            report_encode += encoded - captured
+            report_send += finished - encoded
             elapsed = finished - report_at
             if version >= 5 and elapsed >= 5:
-                print("画面统计：%.1f 帧/秒，%.2f Mbps，采集编码 %.1f ms/帧，发送 %.1f ms/帧。" %
+                print("画面统计：%.1f 帧/秒，%.2f Mbps，采集转换 %.1f ms/帧，编码 %.1f ms/帧，发送 %.1f ms/帧。" %
                       (report_frames / elapsed, report_bytes * 8 / elapsed / 1_000_000,
-                       report_capture * 1000 / report_frames, report_send * 1000 / report_frames), flush=True)
+                       report_capture * 1000 / report_frames, report_encode * 1000 / report_frames,
+                       report_send * 1000 / report_frames), flush=True)
                 report_at, report_frames, report_bytes = finished, 0, 0
-                report_capture = report_send = 0.0
+                report_capture = report_encode = report_send = 0.0
             if version < 3 and hasattr(desktop, "frame_transmitted"):
                 desktop.frame_transmitted(payload != b"U")
             if finished - started >= 1:
                 print("慢帧：采集 %.2f 秒，发送 %.2f 秒，%d 字节。" %
-                      (captured - started, finished - captured, len(payload)), flush=True)
+                      (encoded - started, finished - encoded, len(payload)), flush=True)
             if encoder is None:
                 previous = frame
             del payload

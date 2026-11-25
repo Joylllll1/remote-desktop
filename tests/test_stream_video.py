@@ -103,6 +103,45 @@ class VideoStreamTests(unittest.TestCase):
                                      {'events': [], 'frame': False})
                 client.close()
 
+    def test_raw_capture_path_and_slow_ack_bitrate_change(self):
+        from mss.screenshot import ScreenShot
+        from remotedesk.host.desktop import Desktop
+        from unittest.mock import Mock
+
+        raw_desktop = Desktop()
+        raw_desktop._capture = Mock()
+        raw_desktop._capture.grab.return_value = ScreenShot.from_size(
+            bytearray([30, 60, 190, 0]) * 320 * 180, 320, 180)
+        desktop = RGBDesktop()
+        desktop.capture_video_frame = raw_desktop.capture_video_frame
+        desktop.capture_image = Mock(side_effect=AssertionError('RGB conversion used'))
+        sock, _ = self.host(version=6, desktop=desktop)
+        self.assertEqual(session.receive(sock, 128), stream.READY_V6)
+        session.send(sock, json.dumps({'events': [], 'frame': True, 'codec': 'h264'}).encode(), session.MAX_INPUT)
+        decoder = video.VideoDecoder()
+        ceilings = []
+        original = video.VideoEncoder.set_bitrate
+
+        def record(encoder, bitrate):
+            ceilings.append(bitrate)
+            return original(encoder, bitrate)
+
+        try:
+            for _ in range(4):
+                packet = session.receive(sock, session.MAX_FRAME)
+                with decoder.decode(packet[stream.FRAME_HEADER.size:]) as image:
+                    self.assertEqual(image.size, (320, 180))
+            time.sleep(.3)
+            with patch.object(video.VideoEncoder, 'set_bitrate', record):
+                session.send(sock, json.dumps({'events': [], 'frame': False, 'ack': 4}).encode(), session.MAX_INPUT)
+                packet = session.receive(sock, session.MAX_FRAME)
+                with decoder.decode(packet[stream.FRAME_HEADER.size:]) as image:
+                    self.assertEqual(image.size, (320, 180))
+            self.assertIn(5_600_000, ceilings)
+            self.assertFalse(self.errors)
+        finally:
+            decoder.close()
+
     def test_frame_rate_selected_before_start_is_sent_once_in_initial_request(self):
         local, remote = socket.socketpair()
         self.peers.extend((local, remote))
