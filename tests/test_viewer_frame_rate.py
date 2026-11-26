@@ -144,6 +144,74 @@ class FrameRateViewerTests(unittest.TestCase):
         self.assertEqual(window._mouse_move(Mock(x=10, y=10)), 'break')
         self.assertEqual(window._input.take(), [])
 
+    def test_rendered_poll_defers_next_timer_until_after_idle_redraw(self):
+        window = fake_view(self.worker())
+        window.root = Mock()
+        window.root.after_idle.return_value = 'idle-1'
+        window.root.after.return_value = 'timer-1'
+        window._poll_updates = Mock(return_value=True)
+        window._check_stale = Mock()
+        with patch.object(viewer.time, 'monotonic', side_effect=(10.0, 10.015)):
+            window._poll()
+            window.root.after.assert_not_called()
+            window.root.after_idle.assert_called_once()
+            self.assertEqual(window._poll_idle_job, 'idle-1')
+            # Invoke the deferred idle callback after DisplayCanvas finishes.
+            callback = window.root.after_idle.call_args.args[0]
+            callback()
+        self.assertIsNone(window._poll_idle_job)
+        self.assertEqual(window._poll_job, 'timer-1')
+        window.root.after.assert_called_once_with(1, window._poll)
+
+    def test_menu_pause_cancels_pending_poll_and_resume_restarts_it(self):
+        window = fake_view(self.worker())
+        window.root = Mock()
+        window.root.after.return_value = 'timer-2'
+        window._poll_job = 'timer-1'
+        window._poll_idle_job = 'idle-1'
+        window._resize_job = 'resize-1'
+        window._pause_for_menu()
+        self.assertEqual(window._menu_depth, 1)
+        self.assertIsNone(window._poll_job)
+        self.assertIsNone(window._poll_idle_job)
+        self.assertIsNone(window._resize_job)
+        self.assertEqual(
+            [call.args[0] for call in window.root.after_cancel.call_args_list],
+            ['timer-1', 'idle-1', 'resize-1'],
+        )
+        # Polling is suppressed while a native popup menu is open.
+        window._poll_updates = Mock()
+        window._poll()
+        window._poll_updates.assert_not_called()
+        window.root.after.assert_not_called()
+        # Resuming restores the poll timer once all menus close.
+        window._resume_from_menu()
+        self.assertEqual(window._menu_depth, 0)
+        self.assertEqual(window._poll_job, 'timer-2')
+        window.root.after.assert_called_once_with(viewer._DISPLAY_POLL_MS, window._poll)
+
+    def test_bind_menu_pause_inserts_resume_tag_immediately_after_widget_class(self):
+        window = fake_view(self.worker())
+        window.root = Mock()
+        window._menu_resume_tag = 'RemoteMenuResume-test'
+        window._menu_resume_sequences = set()
+        widget = Mock()
+        widget.winfo_class.return_value = 'TCombobox'
+        widget.bindtags.return_value = ('.bar.cb', 'TCombobox', '.', 'all')
+        window._bind_menu_pause(widget, ('<ButtonPress-1>', '<Down>'))
+        widget.bindtags.assert_called_with(('.bar.cb', 'TCombobox', 'RemoteMenuResume-test', '.', 'all'))
+        self.assertEqual(
+            [call.args[:2] for call in widget.bind.call_args_list],
+            [('<ButtonPress-1>', window._pause_for_menu), ('<Down>', window._pause_for_menu)],
+        )
+        self.assertEqual(
+            [call.args[:3] for call in window.root.bind_class.call_args_list],
+            [
+                ('RemoteMenuResume-test', '<ButtonPress-1>', window._resume_from_menu),
+                ('RemoteMenuResume-test', '<Down>', window._resume_from_menu),
+            ],
+        )
+
 
 if __name__ == '__main__':
     unittest.main()

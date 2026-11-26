@@ -131,7 +131,8 @@ def fake_view(worker):
     window.status = Mock()
     window._worker, window._input, window._frames = worker, worker.inputs, worker.frames
     window._closed = window._ended = False
-    window._poll_job = window._resize_job = window._focus_job = None
+    window._poll_job = window._poll_idle_job = window._resize_job = window._focus_job = None
+    window._menu_depth = 0
     window._keys_down, window._buttons_down, window._key_release_jobs = {}, set(), {}
     window._frame = window._image_rect = window._rendered_frame = None
     window._last_rendered_at, window._stale = None, False

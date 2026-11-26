@@ -499,6 +499,9 @@ class _RecoveryWorker(threading.Thread):
 
 
 class _Viewer:
+    _menu_depth = 0
+    _poll_idle_job = None
+
     def __init__(self, open_session, title, tk, ttk, Image, ImageTk):
         self.title = title
         self.Image = Image
@@ -581,8 +584,15 @@ class _Viewer:
         self._wheel_remainders = {"x": 0, "y": 0}
         self._touchpad_remainders = {"x": 0, "y": 0}
         self._poll_job = None
+        self._poll_idle_job = None
         self._resize_job = None
         self._focus_job = None
+        self._menu_depth = 0
+        self._menu_resume_tag = "RemoteMenuResume-%d" % id(self)
+        self._menu_resume_sequences = set()
+        self._bind_menu_pause(self._resolution_combo, ("<ButtonPress-1>", "<Down>"))
+        self._bind_menu_pause(self._frame_rate_combo, ("<ButtonPress-1>", "<Down>"))
+        self._bind_menu_pause(self._shortcut_button, ("<ButtonPress-1>", "<space>", "<<Invoke>>"))
         self._worker = _RecoveryWorker(open_session, title, self._input, Image)
         self._frames = self._worker.frames
 
@@ -651,21 +661,74 @@ class _Viewer:
         self._resolution_hint.set("" if supported else (
             "需升级共享端才能选择画质" if supported is False else "连接后可选择画质"))
 
+    def _bind_menu_pause(self, widget, sequences):
+        """Pause display polling while a native popup menu tracks events.
+
+        On macOS Tk 9, posting an NSMenu runs Tcl's _runBackgroundLoop inside
+        NSMenuTrackingSession; continuous canvas redraws starve the tracking
+        loop and freeze the viewer. Pausing before the class binding and
+        resuming on a tag immediately after it keeps native menus responsive.
+        """
+        tag = self._menu_resume_tag
+        tags = list(widget.bindtags())
+        class_name = widget.winfo_class()
+        if class_name in tags and tag not in tags:
+            tags.insert(tags.index(class_name) + 1, tag)
+            widget.bindtags(tuple(tags))
+        for sequence in sequences:
+            widget.bind(sequence, self._pause_for_menu, add="+")
+            if sequence not in self._menu_resume_sequences:
+                self.root.bind_class(tag, sequence, self._resume_from_menu, add="+")
+                self._menu_resume_sequences.add(sequence)
+
+    def _pause_for_menu(self, event=None):
+        self._menu_depth += 1
+        for attr in ("_poll_job", "_poll_idle_job", "_resize_job"):
+            job = getattr(self, attr, None)
+            if job is not None:
+                setattr(self, attr, None)
+                try:
+                    self.root.after_cancel(job)
+                except Exception:
+                    pass
+
+    def _resume_from_menu(self, event=None):
+        self._menu_depth = max(0, self._menu_depth - 1)
+        if (self._menu_depth == 0 and not self._closed and not self._ended
+                and self._poll_job is None and self._poll_idle_job is None):
+            self._poll_job = self.root.after(_DISPLAY_POLL_MS, self._poll)
+
     def _poll(self):
         self._poll_job = None
-        if self._closed:
+        if self._closed or self._menu_depth > 0:
             return
         started = time.monotonic()
+        rendered = False
         try:
-            self._poll_updates()
+            rendered = self._poll_updates() is True
             self._check_stale()
         except Exception as cause:
             self._fail_display(cause)
-        if not self._closed and not self._ended:
-            # Include rendering time in the period. Sleeping 20 ms after each
-            # render would cap display below 50 fps even on a fast connection.
-            delay = max(1, _DISPLAY_POLL_MS - int((time.monotonic() - started) * 1000))
-            self._poll_job = self.root.after(delay, self._poll)
+        if not self._closed and not self._ended and self._menu_depth == 0:
+            if rendered:
+                # Defer arming the next timer until after Tk's idle canvas
+                # redraw finishes. Otherwise on macOS Tk 9, a redraw longer
+                # than `delay` makes the timer expire immediately inside
+                # _runBackgroundLoop and starves Cocoa modal loops.
+                self._poll_idle_job = self.root.after_idle(
+                    lambda s=started: self._schedule_next_poll(s)
+                )
+            else:
+                self._schedule_next_poll(started)
+
+    def _schedule_next_poll(self, started):
+        self._poll_idle_job = None
+        if self._closed or self._ended or self._menu_depth > 0 or self._poll_job is not None:
+            return
+        # Include rendering time in the period. Sleeping 20 ms after each
+        # render would cap display below 50 fps even on a fast connection.
+        delay = max(1, _DISPLAY_POLL_MS - int((time.monotonic() - started) * 1000))
+        self._poll_job = self.root.after(delay, self._poll)
 
     def _fail_display(self, cause):
         error = RuntimeError("无法显示远程桌面：%s。请关闭窗口后重新连接。" % (str(cause) or cause.__class__.__name__))
@@ -745,7 +808,7 @@ class _Viewer:
                 break
             if state == "terminal":
                 self._show_terminal(detail)
-                return
+                return False
             if state == "capabilities":
                 self._set_resolution_capability(detail)
                 continue
@@ -770,7 +833,7 @@ class _Viewer:
         try:
             epoch, frame = self._frames.get_nowait()
         except queue.Empty:
-            return
+            return False
         previous = self._frame
         self._frame = frame
         try:
@@ -789,6 +852,7 @@ class _Viewer:
                 _lifecycle("画面已更新，已恢复控制。")
         else:
             self._show_overlay("正在显示旧画面\n等待连接恢复，控制已暂停。")
+        return True
 
     def _resized(self, event):
         if self._closed:
@@ -797,9 +861,14 @@ class _Viewer:
         self._overlay_bounds()
         if self._resize_job is not None:
             self.root.after_cancel(self._resize_job)
-        self._resize_job = self.root.after(35, self._safe_render)
+            self._resize_job = None
+        if self._menu_depth == 0:
+            self._resize_job = self.root.after(35, self._safe_render)
 
     def _safe_render(self):
+        self._resize_job = None
+        if self._closed or self._ended or self._menu_depth > 0:
+            return
         try:
             self._render()
             if self._rendered_frame is not None and not self._input.ready:
@@ -1015,7 +1084,7 @@ class _Viewer:
             self._clear_local_input()
         except Exception:
             pass
-        for job in (self._poll_job, self._resize_job, self._focus_job):
+        for job in (self._poll_job, self._poll_idle_job, self._resize_job, self._focus_job):
             if job is not None:
                 try:
                     self.root.after_cancel(job)
