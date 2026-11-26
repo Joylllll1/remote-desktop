@@ -90,6 +90,12 @@ class ScrollTests(unittest.TestCase):
         desktop._mouse.scroll.assert_called_once_with(-1, -2)
         self.assertEqual(desktop._mouse.position, (969, 545))
 
+    def test_macos_mouse_button_mapping_matches_tk8_and_tk9(self):
+        self.assertEqual(viewer._mouse_buttons(8.6, 'darwin'), {1: 'left', 2: 'right', 3: 'middle'})
+        self.assertEqual(viewer._mouse_buttons(9.0, 'darwin'), {1: 'left', 2: 'middle', 3: 'right'})
+        self.assertEqual(viewer._mouse_buttons(8.6, 'win32'), {1: 'left', 2: 'middle', 3: 'right'})
+        self.assertEqual(viewer._mouse_buttons(9.0, 'linux'), {1: 'left', 2: 'middle', 3: 'right'})
+
 
 if __name__ == '__main__':
     unittest.main()

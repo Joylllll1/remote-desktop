@@ -80,6 +80,13 @@ def _key_name(event):
     return _SYMBOL_KEYS.get(keysym)
 
 
+def _mouse_buttons(tk_version, platform=None):
+    """Map Tk button numbers; Tk 9 on macOS Aqua aligned Button-3 to right-click."""
+    if (sys.platform if platform is None else platform) == "darwin" and float(tk_version) < 9:
+        return {1: "left", 2: "right", 3: "middle"}
+    return {1: "left", 2: "middle", 3: "right"}
+
+
 def _key_identity(event):
     """Match key-up to key-down even when modifiers change on macOS.
 
@@ -581,10 +588,7 @@ class _Viewer:
 
         self.canvas.bind("<Configure>", self._resized)
         self.canvas.bind("<Motion>", self._mouse_move)
-        buttons = {1: "left", 2: "middle", 3: "right"}
-        if sys.platform == "darwin":
-            buttons = {1: "left", 2: "right", 3: "middle"}
-        for number, button in buttons.items():
+        for number, button in _mouse_buttons(getattr(tk, "TkVersion", 8.6)).items():
             self.canvas.bind("<ButtonPress-%d>" % number,
                              lambda event, name=button: self._mouse_button(event, name, True))
             self.canvas.bind("<ButtonRelease-%d>" % number,
